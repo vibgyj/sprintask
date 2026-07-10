@@ -1,0 +1,6 @@
+.DS_Store
+.env
+config/local.php
+var/data/
+var/log/
+.opencode

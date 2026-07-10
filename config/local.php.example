@@ -1,0 +1,7 @@
+<?php
+
+return [
+    // Example local overrides. Copy to config/local.php (gitignored).
+    // 'app' => ['env' => 'development'],
+    // 'mail' => ['transport' => 'log'],
+];
