@@ -16,6 +16,7 @@ final class Application
     private AuthService $auth;
     private WorkService $work;
     private ReportService $reports;
+    private string $basePath;
 
     public function __construct(
         private readonly array $config,
@@ -28,11 +29,14 @@ final class Application
         $this->auth = new AuthService($database, $mailer, $config['security']);
         $this->work = new WorkService($database);
         $this->reports = new ReportService($database);
+        $this->basePath = UrlPath::resolveBasePath($_SERVER, (string) ($config['app']['base_url'] ?? ''));
     }
 
     public function run(): void
     {
-        $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        $requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
+        $requestPath = is_string($requestPath) ? $requestPath : '/';
+        $path = UrlPath::stripBasePath($requestPath, $this->basePath);
         $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
 
         try {
@@ -276,6 +280,8 @@ final class Application
         $data['flash'] = $_SESSION['flash'] ?? [];
         unset($_SESSION['flash']);
         $data['current_user'] = $this->currentUser();
+        $data['base_path'] = $this->basePath;
+        $data['url'] = fn(string $path = '/'): string => UrlPath::appPath($path, $this->basePath);
 
         extract($data, EXTR_SKIP);
         require $this->root . '/templates/layout.php';
@@ -310,7 +316,7 @@ final class Application
 
     private function redirect(string $path): void
     {
-        header('Location: ' . $path);
+        header('Location: ' . UrlPath::appPath($path, $this->basePath));
         exit;
     }
 

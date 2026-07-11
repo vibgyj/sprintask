@@ -4,3 +4,5 @@ config/local.php
 var/data/
 var/log/
 .opencode
+*.zip
+error.txt

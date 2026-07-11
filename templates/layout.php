@@ -18,7 +18,7 @@ $bodyClass = $isSettingsPage ? 'settings-page' : ($template === 'dashboard.php' 
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sprintask</title>
-  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="<?= Util::e($url('/assets/styles.css')) ?>">
 </head>
 <body class="<?= Util::e($bodyClass) ?>">
   <main class="<?= Util::e($containerClass) ?>">
@@ -35,10 +35,10 @@ $bodyClass = $isSettingsPage ? 'settings-page' : ($template === 'dashboard.php' 
         <h1>Sprintask</h1>
         <div class="row">
           <?php if (!empty($current_user)): ?>
-            <a href="/">Dashboard</a>
-            <a href="/reports">Reports</a>
-            <a href="/settings">Settings</a>
-            <form method="post" action="/logout" style="margin:0;">
+            <a href="<?= Util::e($url('/')) ?>">Dashboard</a>
+            <a href="<?= Util::e($url('/reports')) ?>">Reports</a>
+            <a href="<?= Util::e($url('/settings')) ?>">Settings</a>
+            <form method="post" action="<?= Util::e($url('/logout')) ?>" style="margin:0;">
               <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
               <button type="submit">Log out</button>
             </form>
@@ -53,6 +53,6 @@ $bodyClass = $isSettingsPage ? 'settings-page' : ($template === 'dashboard.php' 
       <?php require $pageTemplate; ?>
     <?php endif; ?>
   </main>
-  <script src="/assets/app.js"></script>
+  <script src="<?= Util::e($url('/assets/app.js')) ?>"></script>
 </body>
 </html>
