@@ -270,6 +270,7 @@ final class Application
             'composer' => $composer,
             'running' => $running,
             'entries' => $entries,
+            'server_now_utc' => time(),
         ]);
     }
 

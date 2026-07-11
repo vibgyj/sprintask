@@ -3,24 +3,27 @@
 <?php
 $composerCategories = $composer['categories'] ?? [];
 $composerTasks = $composer['tasks'] ?? [];
+$serverNowUtc = (int) ($server_now_utc ?? time());
+$runningElapsedBaseline = 0;
+if ($running) {
+  $runningStartedAtUtc = (int) ($running['started_at_utc'] ?? 0);
+  $runningElapsedBaseline = max(0, $serverNowUtc - $runningStartedAtUtc);
+}
 ?>
 
 <section class="card">
   <h2>Hello, <?= Util::e((string) $user['name']) ?></h2>
 
   <?php if ($running): ?>
-    <form method="post" action="<?= Util::e($url('/timer/stop')) ?>" class="timer-composer timer-running" data-running-since="<?= (int) $running['started_at_utc'] ?>">
+    <form method="post" action="<?= Util::e($url('/timer/stop')) ?>" class="timer-composer timer-running" data-running-since="<?= (int) $running['started_at_utc'] ?>" data-elapsed-baseline="<?= $runningElapsedBaseline ?>">
       <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
-      <div class="timer-row">
+      <div class="timer-row timer-row-running">
         <label class="sr-only" for="running-category-input">Category</label>
         <input id="running-category-input" value="<?= Util::e((string) $running['category_name']) ?>" disabled aria-label="Running category <?= Util::e((string) $running['category_name']) ?>">
         <label class="sr-only" for="running-task-input">Task</label>
         <input id="running-task-input" value="<?= Util::e((string) $running['task_name']) ?>" disabled aria-label="Running task <?= Util::e((string) $running['task_name']) ?>">
         <button type="submit">Stop</button>
-      </div>
-      <div class="timer-running-meta">
-        <span class="muted">Running</span>
-        <strong data-elapsed>00:00:00</strong>
+        <span class="timer-elapsed-inline"><span class="muted">Running</span> <strong data-elapsed>00:00:00</strong></span>
       </div>
     </form>
   <?php else: ?>

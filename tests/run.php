@@ -341,6 +341,47 @@ function testAppRootResolver(): void {
     );
 }
 
+function renderDashboardTemplateForTest(array $data): string {
+    $templatePath = dirname(__DIR__) . '/templates/dashboard.php';
+    $defaults = [
+        'user' => ['name' => 'Tester', 'timezone' => 'UTC'],
+        'composer' => ['categories' => [], 'tasks' => []],
+        'categories' => [],
+        'entries' => [],
+        'running' => null,
+        'csrf_token' => 'test-csrf',
+        'url' => static fn(string $path = '/'): string => $path,
+    ];
+
+    extract(array_merge($defaults, $data), EXTR_SKIP);
+
+    ob_start();
+    require $templatePath;
+    return (string) ob_get_clean();
+}
+
+function testDashboardTimerBaselineRendering(): void {
+    $html = renderDashboardTemplateForTest([
+        'server_now_utc' => 1_090,
+        'running' => [
+            'started_at_utc' => 1_000,
+            'category_name' => 'Build',
+            'task_name' => 'Code',
+        ],
+    ]);
+    assertTrue(str_contains($html, 'data-elapsed-baseline="90"'), 'Dashboard should render server-derived elapsed baseline for running timer');
+
+    $futureStartHtml = renderDashboardTemplateForTest([
+        'server_now_utc' => 1_000,
+        'running' => [
+            'started_at_utc' => 1_100,
+            'category_name' => 'Build',
+            'task_name' => 'Code',
+        ],
+    ]);
+    assertTrue(str_contains($futureStartHtml, 'data-elapsed-baseline="0"'), 'Dashboard baseline should clamp negative elapsed time to zero');
+}
+
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testOtpThrottleAndLoginFlow();
@@ -352,5 +393,6 @@ testCategoryScopedDuplicateTaskNames();
 testLocalTimeDisplayHelpers();
 testUrlBasePathHelpers();
 testAppRootResolver();
+testDashboardTimerBaselineRendering();
 
 echo "All tests passed\n";

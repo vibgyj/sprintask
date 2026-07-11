@@ -160,13 +160,16 @@ input:disabled, select:disabled {
   gap: 0.6rem;
   align-items: center;
 }
-.timer-running-meta {
+.timer-elapsed-inline {
   display: flex;
-  gap: 0.5rem;
+  gap: 0.4rem;
   align-items: center;
-  padding-left: 0.1rem;
+  white-space: nowrap;
 }
 .timer-row button { min-width: 110px; }
+.timer-row-running {
+  grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto auto;
+}
 
 .combobox { position: relative; }
 .combobox input { width: 100%; }
@@ -255,11 +258,13 @@ svg { width: 100%; height: auto; }
 
 @media (max-width: 900px) {
   .timer-row,
+  .timer-row-running,
   .manual-entry-row {
     grid-template-columns: 1fr;
   }
 
   .timer-row button,
+  .timer-row-running button,
   .manual-entry-row button {
     width: 100%;
   }
