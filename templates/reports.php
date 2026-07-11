@@ -2,7 +2,7 @@
 
 <section class="card">
   <h2>Reports</h2>
-  <form method="get" action="/reports" class="row">
+  <form method="get" action="<?= Util::e($url('/reports')) ?>" class="row">
     <select name="mode">
       <option value="week" <?= $report['mode'] === 'week' ? 'selected' : '' ?>>Week</option>
       <option value="month" <?= $report['mode'] === 'month' ? 'selected' : '' ?>>Month</option>

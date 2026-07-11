@@ -16,7 +16,10 @@ use App\Mail\LogMailer;
 use App\Services\AuthService;
 use App\Services\ReportService;
 use App\Services\WorkService;
+use App\UrlPath;
 use App\Util;
+
+require dirname(__DIR__) . '/public/bootstrap_resolver.php';
 
 function assertTrue(bool $condition, string $message): void {
     if (!$condition) {
@@ -296,6 +299,48 @@ function testLocalTimeDisplayHelpers(): void {
     assertTrue($full === '2026-07-10 06:19 PM', 'Full datetime helper should include date and local time');
 }
 
+function testUrlBasePathHelpers(): void {
+    assertTrue(UrlPath::basePathFromScript('/index.php') === '', 'Root index.php should resolve empty base path');
+    assertTrue(UrlPath::basePathFromScript('/sprintask/index.php') === '/sprintask', 'Nested index.php should resolve mount base path');
+    assertTrue(UrlPath::basePathFromScript('https://example.com/sprintask/index.php') === '/sprintask', 'Absolute script URL should resolve mount base path');
+
+    assertTrue(UrlPath::resolveBasePath(['SCRIPT_NAME' => '/sprintask/index.php'], '') === '/sprintask', 'Runtime script mount should drive base path when APP_BASE_URL is empty');
+    assertTrue(UrlPath::resolveBasePath(['SCRIPT_NAME' => '/index.php'], 'https://example.com/sprintask/') === '/sprintask', 'APP_BASE_URL path should override runtime base path when set');
+    assertTrue(UrlPath::resolveBasePath(['SCRIPT_NAME' => '/sprintask/index.php'], 'https://example.com/') === '', 'APP_BASE_URL root path should override runtime base path');
+
+    assertTrue(UrlPath::stripBasePath('/sprintask/reports', '/sprintask') === '/reports', 'Base path should be stripped before routing');
+    assertTrue(UrlPath::stripBasePath('/sprintask', '/sprintask') === '/', 'Mount path itself should map to app root route');
+    assertTrue(UrlPath::stripBasePath('/reports', '/sprintask') === '/reports', 'Non-prefixed request path should remain unchanged');
+
+    assertTrue(UrlPath::appPath('/', '') === '/', 'Root app URL should remain root without base path');
+    assertTrue(UrlPath::appPath('/reports', '/sprintask') === '/sprintask/reports', 'App URL should include mount base path');
+    assertTrue(UrlPath::appPath('/', '/sprintask') === '/sprintask/', 'App root URL should include trailing slash when mounted');
+}
+
+function testAppRootResolver(): void {
+    $publicDir = '/tmp/site/public';
+
+    assertTrue(
+        sprintaskResolveAppRoot([], $publicDir) === '/tmp/site',
+        'Default app-root should resolve to parent of public directory'
+    );
+
+    assertTrue(
+        sprintaskResolveAppRoot(['SPRINTASK_ROOT' => '/home/cpanel-user/private-app'], $publicDir) === '/home/cpanel-user/private-app',
+        'Server-provided SPRINTASK_ROOT should override default app-root'
+    );
+
+    assertTrue(
+        sprintaskResolveBootstrapPath(['SPRINTASK_ROOT' => '/home/cpanel-user/private-app/'], $publicDir) === '/home/cpanel-user/private-app/src/bootstrap.php',
+        'Bootstrap path should normalize trailing slashes in configured app-root'
+    );
+
+    assertThrows(
+        static fn() => sprintaskRequireBootstrapPath('/definitely/missing/src/bootstrap.php'),
+        'Resolver should throw a clear error when bootstrap path is missing'
+    );
+}
+
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testOtpThrottleAndLoginFlow();
@@ -305,5 +350,7 @@ testManualEntryValidation();
 testNoCaseUniquenessAndResolveOrCreateStart();
 testCategoryScopedDuplicateTaskNames();
 testLocalTimeDisplayHelpers();
+testUrlBasePathHelpers();
+testAppRootResolver();
 
 echo "All tests passed\n";

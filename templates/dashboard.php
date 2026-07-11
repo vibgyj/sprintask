@@ -9,7 +9,7 @@ $composerTasks = $composer['tasks'] ?? [];
   <h2>Hello, <?= Util::e((string) $user['name']) ?></h2>
 
   <?php if ($running): ?>
-    <form method="post" action="/timer/stop" class="timer-composer timer-running" data-running-since="<?= (int) $running['started_at_utc'] ?>">
+    <form method="post" action="<?= Util::e($url('/timer/stop')) ?>" class="timer-composer timer-running" data-running-since="<?= (int) $running['started_at_utc'] ?>">
       <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
       <div class="timer-row">
         <label class="sr-only" for="running-category-input">Category</label>
@@ -24,7 +24,7 @@ $composerTasks = $composer['tasks'] ?? [];
       </div>
     </form>
   <?php else: ?>
-    <form method="post" action="/timer/start" class="timer-composer" data-timer-composer>
+    <form method="post" action="<?= Util::e($url('/timer/start')) ?>" class="timer-composer" data-timer-composer>
       <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
       <input type="hidden" name="category_id" value="" data-selected-category-id>
       <input type="hidden" name="task_id" value="" data-selected-task-id>
@@ -74,7 +74,7 @@ $composerTasks = $composer['tasks'] ?? [];
           <tr id="entry-detail-<?= $entryId ?>" class="entry-detail-row" hidden>
             <td colspan="5">
               <div class="entry-detail-wrap">
-                <form method="post" action="/entries/update" class="entry-detail-form">
+                <form method="post" action="<?= Util::e($url('/entries/update')) ?>" class="entry-detail-form">
                   <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
                   <input type="hidden" name="entry_id" value="<?= $entryId ?>">
                   <label class="sr-only" for="entry-start-<?= $entryId ?>">Start date and time</label>
@@ -83,7 +83,7 @@ $composerTasks = $composer['tasks'] ?? [];
                   <input id="entry-end-<?= $entryId ?>" type="datetime-local" name="ended_at" value="<?= Util::e(Util::utcToLocalInput((int) $entry['ended_at_utc'], (string) $user['timezone'])) ?>" required>
                   <button type="submit">Save</button>
                 </form>
-                <form method="post" action="/entries/delete" class="entry-delete-form">
+                <form method="post" action="<?= Util::e($url('/entries/delete')) ?>" class="entry-delete-form">
                   <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
                   <input type="hidden" name="entry_id" value="<?= $entryId ?>">
                   <button class="danger" type="submit">Delete</button>
@@ -99,7 +99,7 @@ $composerTasks = $composer['tasks'] ?? [];
 
 <section class="card">
   <h3>Add manual entry</h3>
-  <form method="post" action="/entries/create" class="manual-entry-row">
+  <form method="post" action="<?= Util::e($url('/entries/create')) ?>" class="manual-entry-row">
     <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
     <label class="sr-only" for="manual-task">Task</label>
     <select id="manual-task" name="task_id" required>
