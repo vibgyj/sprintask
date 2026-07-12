@@ -7,10 +7,13 @@
   const timer = document.querySelector('[data-running-since]');
   if (timer) {
     const started = parseInt(timer.getAttribute('data-running-since') || '0', 10);
+    const baselineSeconds = parseInt(timer.getAttribute('data-elapsed-baseline') || '0', 10);
     const output = timer.querySelector('[data-elapsed]');
     if (output && started > 0) {
+      const localTickOriginMs = Date.now();
       const tick = () => {
-        const seconds = Math.max(0, Math.floor(Date.now() / 1000) - started);
+        const localElapsedSeconds = Math.max(0, Math.floor((Date.now() - localTickOriginMs) / 1000));
+        const seconds = Math.max(0, baselineSeconds) + localElapsedSeconds;
         const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
         const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
         const s = (seconds % 60).toString().padStart(2, '0');
@@ -18,6 +21,11 @@
       };
       tick();
       setInterval(tick, 1000);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+          tick();
+        }
+      });
     }
   }
 

@@ -75,7 +75,11 @@ If using PHP built-in server for quick local checks:
 
 ## Mail behavior
 - Production: native PHP `mail()` via host local MTA (cPanel typical setup)
-- Development: file log transport to `var/log/mail.log`
+- Development/local OTP emails (including one-time codes) are written to `var/log/mail.log`
+
+Inspect/follow OTP mail log:
+- Host: `tail -n 20 var/log/mail.log` (inspect), `tail -f var/log/mail.log` (follow)
+- Docker (`app` service): `docker compose exec app sh -lc 'tail -n 20 /var/www/html/var/log/mail.log'` (inspect), `docker compose exec app sh -lc 'tail -f /var/www/html/var/log/mail.log'` (follow)
 
 Sender values come from environment/private config:
 - `MAIL_FROM_ADDRESS`
