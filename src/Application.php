@@ -17,6 +17,9 @@ final class Application
     private WorkService $work;
     private ReportService $reports;
     private string $basePath;
+    private string $rememberCookieName;
+    private bool $currentUserResolved = false;
+    private ?array $currentUserCache = null;
 
     public function __construct(
         private readonly array $config,
@@ -30,6 +33,7 @@ final class Application
         $this->work = new WorkService($database);
         $this->reports = new ReportService($database);
         $this->basePath = UrlPath::resolveBasePath($_SERVER, (string) ($config['app']['base_url'] ?? ''));
+        $this->rememberCookieName = (string) ($config['session']['remember_cookie'] ?? 'sprintask_remember');
     }
 
     public function run(): void
@@ -38,6 +42,8 @@ final class Application
         $requestPath = is_string($requestPath) ? $requestPath : '/';
         $path = UrlPath::stripBasePath($requestPath, $this->basePath);
         $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
+
+        $this->attemptRememberLogin();
 
         try {
             $this->route($path, $method);
@@ -85,8 +91,10 @@ final class Application
             $code = (string) ($_POST['code'] ?? '');
             $result = $this->auth->verifyOtp('register', $email, $code, $name);
             if ($result['ok']) {
+                $userId = (int) $result['user_id'];
                 $this->session->regenerate();
-                $_SESSION['user_id'] = (int) $result['user_id'];
+                $_SESSION['user_id'] = $userId;
+                $_SESSION['session_version'] = $this->auth->sessionVersion($userId);
                 unset($_SESSION['otp_register_name'], $_SESSION['otp_register_email']);
                 $this->flash('success', 'Welcome! Registration complete.');
                 $this->redirect('/');
@@ -124,10 +132,21 @@ final class Application
             $code = (string) ($_POST['code'] ?? '');
             $result = $this->auth->verifyOtp('login', $email, $code);
             if ($result['ok']) {
+                $userId = (int) $result['user_id'];
+                $rememberMe = !empty($_POST['remember_me']);
+                $logoutOtherDevices = !empty($_POST['logout_other_devices']);
+                $login = $this->auth->completeLogin($userId, $rememberMe, $logoutOtherDevices, $this->ip(), (string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
+
                 $this->session->regenerate();
-                $_SESSION['user_id'] = (int) $result['user_id'];
+                $_SESSION['user_id'] = $userId;
+                $_SESSION['session_version'] = $login['session_version'];
                 unset($_SESSION['otp_login_email']);
-                $this->flash('success', 'Logged in.');
+
+                if ($login['remember'] !== null) {
+                    $this->setRememberCookie($login['remember']['selector'], $login['remember']['validator'], $login['remember']['expires_at']);
+                }
+
+                $this->flash('success', $logoutOtherDevices ? 'Logged in. Other devices have been signed out.' : 'Logged in.');
                 $this->redirect('/');
             }
             $this->flash('error', (string) $result['error']);
@@ -136,6 +155,7 @@ final class Application
 
         if ($path === '/logout' && $method === 'POST') {
             $this->requireCsrf();
+            $this->revokeRememberCookie();
             $_SESSION = [];
             session_destroy();
             $this->redirect('/auth/login');
@@ -299,8 +319,106 @@ final class Application
 
     private function currentUser(): ?array
     {
+        if ($this->currentUserResolved) {
+            return $this->currentUserCache;
+        }
+        $this->currentUserResolved = true;
+
         $id = (int) ($_SESSION['user_id'] ?? 0);
-        return $id > 0 ? $this->auth->findUserById($id) : null;
+        if ($id <= 0) {
+            return $this->currentUserCache = null;
+        }
+
+        $user = $this->auth->findUserById($id);
+        if (!$user) {
+            unset($_SESSION['user_id'], $_SESSION['session_version']);
+            return $this->currentUserCache = null;
+        }
+
+        if ((int) ($_SESSION['session_version'] ?? -1) !== $this->auth->sessionVersion($id)) {
+            // Session was invalidated elsewhere (e.g. "log out of other devices").
+            unset($_SESSION['user_id'], $_SESSION['session_version']);
+            $this->revokeRememberCookie();
+            return $this->currentUserCache = null;
+        }
+
+        return $this->currentUserCache = $user;
+    }
+
+    /**
+     * If there is no active session but a valid "remember me" cookie is
+     * present, transparently re-establishes the session without requiring
+     * another OTP.
+     */
+    private function attemptRememberLogin(): void
+    {
+        if (!empty($_SESSION['user_id'])) {
+            return;
+        }
+
+        $cookie = $_COOKIE[$this->rememberCookieName] ?? null;
+        if (!is_string($cookie) || $cookie === '') {
+            return;
+        }
+
+        $result = $this->auth->loginFromRememberToken($cookie);
+        if ($result === null) {
+            $this->clearRememberCookie();
+            return;
+        }
+
+        $this->session->regenerate();
+        $_SESSION['user_id'] = $result['user_id'];
+        $_SESSION['session_version'] = $result['session_version'];
+        $this->setRememberCookie($result['selector'], $result['validator'], $result['expires_at']);
+    }
+
+    private function setRememberCookie(string $selector, string $validator, int $expiresAt): void
+    {
+        setcookie($this->rememberCookieName, $selector . ':' . $validator, [
+            'expires' => $expiresAt,
+            'path' => '/',
+            'domain' => '',
+            'secure' => $this->isHttps(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        $_COOKIE[$this->rememberCookieName] = $selector . ':' . $validator;
+    }
+
+    private function clearRememberCookie(): void
+    {
+        setcookie($this->rememberCookieName, '', [
+            'expires' => time() - 3600,
+            'path' => '/',
+            'domain' => '',
+            'secure' => $this->isHttps(),
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ]);
+        unset($_COOKIE[$this->rememberCookieName]);
+    }
+
+    /**
+     * Revokes the current device's remember-me token (DB row + cookie).
+     * Used on explicit logout so a stolen/cached cookie cannot resurrect
+     * the session after the user signs out.
+     */
+    private function revokeRememberCookie(): void
+    {
+        $cookie = $_COOKIE[$this->rememberCookieName] ?? null;
+        if (is_string($cookie) && str_contains($cookie, ':')) {
+            [$selector] = explode(':', $cookie, 2);
+            if ($selector !== '') {
+                $this->auth->revokeRememberTokenBySelector($selector);
+            }
+        }
+        $this->clearRememberCookie();
+    }
+
+    private function isHttps(): bool
+    {
+        return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
     }
 
     private function requireCsrf(): void

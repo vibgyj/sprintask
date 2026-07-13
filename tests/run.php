@@ -53,6 +53,7 @@ function baseSecurity(): array {
         'otp_email_max_requests' => 6,
         'otp_ip_window_seconds' => 3600,
         'otp_ip_max_requests' => 50,
+        'remember_me_ttl_seconds' => 2592000,
     ];
 }
 
@@ -382,9 +383,99 @@ function testDashboardTimerBaselineRendering(): void {
     assertTrue(str_contains($futureStartHtml, 'data-elapsed-baseline="0"'), 'Dashboard baseline should clamp negative elapsed time to zero');
 }
 
+function testRememberMeTokenLifecycle(): void {
+    [$db, $path] = setupDb();
+    $log = sys_get_temp_dir() . '/mail_' . bin2hex(random_bytes(3)) . '.log';
+    $auth = new AuthService($db, new LogMailer($log), baseSecurity());
+    $pdo = $db->pdo();
+    $now = time();
+    $pdo->exec("INSERT INTO users (email,name,timezone,theme,created_at_utc) VALUES ('remember@test','Remember','UTC','system',$now)");
+    $userId = 1;
+
+    $login = $auth->completeLogin($userId, true, false, '127.0.0.1', 'test-agent');
+    assertTrue($login['remember'] !== null, 'Remember-me should issue a token when requested');
+    $cookie = $login['remember']['selector'] . ':' . $login['remember']['validator'];
+
+    $resolved = $auth->loginFromRememberToken($cookie);
+    assertTrue($resolved !== null && $resolved['user_id'] === $userId, 'Valid remember cookie should resolve to the user');
+
+    $reused = $auth->loginFromRememberToken($cookie);
+    assertTrue($reused === null, 'Rotated remember token must reject the previous cookie value (single use)');
+
+    $login2 = $auth->completeLogin($userId, true, false, '127.0.0.1', 'test-agent');
+    $selector2 = $login2['remember']['selector'];
+    $tampered = $selector2 . ':deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
+    $badResult = $auth->loginFromRememberToken($tampered);
+    assertTrue($badResult === null, 'Tampered validator must be rejected');
+
+    $afterTamper = $auth->loginFromRememberToken($selector2 . ':' . $login2['remember']['validator']);
+    assertTrue($afterTamper === null, 'Token must be revoked after a failed validator attempt');
+
+    unlink($path);
+    if (is_file($log)) {
+        unlink($log);
+    }
+}
+
+function testLogoutOtherDevicesInvalidatesTokensAndVersion(): void {
+    [$db, $path] = setupDb();
+    $log = sys_get_temp_dir() . '/mail_' . bin2hex(random_bytes(3)) . '.log';
+    $auth = new AuthService($db, new LogMailer($log), baseSecurity());
+    $pdo = $db->pdo();
+    $now = time();
+    $pdo->exec("INSERT INTO users (email,name,timezone,theme,created_at_utc) VALUES ('multidevice@test','Multi','UTC','system',$now)");
+    $userId = 1;
+
+    $deviceA = $auth->completeLogin($userId, true, false, '127.0.0.1', 'device-a');
+    $deviceACookie = $deviceA['remember']['selector'] . ':' . $deviceA['remember']['validator'];
+    $versionA = $deviceA['session_version'];
+
+    $deviceB = $auth->completeLogin($userId, true, true, '127.0.0.2', 'device-b');
+    assertTrue($deviceB['session_version'] === $versionA + 1, 'Logging out other devices should bump the session version');
+
+    $staleFromA = $auth->loginFromRememberToken($deviceACookie);
+    assertTrue($staleFromA === null, 'Device A remember token should be invalidated by device B logging out other devices');
+
+    assertTrue($auth->sessionVersion($userId) === $versionA + 1, 'sessionVersion() should reflect the bump');
+
+    $deviceBCookie = $deviceB['remember']['selector'] . ':' . $deviceB['remember']['validator'];
+    $stillWorks = $auth->loginFromRememberToken($deviceBCookie);
+    assertTrue($stillWorks !== null, 'The device performing logout-other-devices should keep its own new session valid');
+
+    unlink($path);
+    if (is_file($log)) {
+        unlink($log);
+    }
+}
+
+function testRememberTokenExpiry(): void {
+    [$db, $path] = setupDb();
+    $log = sys_get_temp_dir() . '/mail_' . bin2hex(random_bytes(3)) . '.log';
+    $auth = new AuthService($db, new LogMailer($log), baseSecurity());
+    $pdo = $db->pdo();
+    $now = time();
+    $pdo->exec("INSERT INTO users (email,name,timezone,theme,created_at_utc) VALUES ('expiretoken@test','ExpireToken','UTC','system',$now)");
+    $userId = 1;
+
+    $login = $auth->completeLogin($userId, true, false, '127.0.0.1', 'test');
+    $pdo->exec('UPDATE remember_tokens SET expires_at_utc = ' . ($now - 1) . " WHERE user_id = $userId");
+    $cookie = $login['remember']['selector'] . ':' . $login['remember']['validator'];
+
+    $result = $auth->loginFromRememberToken($cookie);
+    assertTrue($result === null, 'Expired remember token must be rejected');
+
+    unlink($path);
+    if (is_file($log)) {
+        unlink($log);
+    }
+}
+
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testOtpThrottleAndLoginFlow();
+testRememberMeTokenLifecycle();
+testLogoutOtherDevicesInvalidatesTokensAndVersion();
+testRememberTokenExpiry();
 testOwnershipCascadeAndTimerIndex();
 testReportClipping();
 testManualEntryValidation();

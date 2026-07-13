@@ -6,6 +6,16 @@
     <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
     <input type="text" value="<?= Util::e((string) $email) ?>" readonly>
     <input name="code" inputmode="numeric" pattern="\d{6}" maxlength="6" placeholder="123456" required>
+    <?php if ($purpose === 'login'): ?>
+      <label class="checkbox-row">
+        <input type="checkbox" name="remember_me" value="1">
+        Remember me on this device for 30 days
+      </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="logout_other_devices" value="1">
+        Log out of all other active sessions
+      </label>
+    <?php endif; ?>
     <button type="submit">Verify</button>
   </form>
 </section>
