@@ -159,6 +159,148 @@ final class AuthService
         return $row ?: null;
     }
 
+    /**
+     * Current session epoch for a user. Bumped whenever the user chooses to
+     * "log out of other devices"; any session/remember-token stamped with an
+     * older version is treated as invalid.
+     */
+    public function sessionVersion(int $userId): int
+    {
+        $stmt = $this->db->pdo()->prepare('SELECT session_version FROM user_security WHERE user_id = :id');
+        $stmt->execute([':id' => $userId]);
+        $version = $stmt->fetchColumn();
+        return $version === false ? 0 : (int) $version;
+    }
+
+    /**
+     * Finalizes a successful OTP login: optionally invalidates every other
+     * device (session-version bump + wipe of remember-me tokens) and/or
+     * issues a new 30-day "remember me" token for this device.
+     *
+     * @return array{session_version:int, remember: array{selector:string, validator:string, expires_at:int}|null}
+     */
+    public function completeLogin(int $userId, bool $rememberMe, bool $logoutOtherDevices, string $ip, string $ua): array
+    {
+        $pdo = $this->db->pdo();
+        $now = time();
+
+        $pdo->beginTransaction();
+        try {
+            $version = $this->sessionVersion($userId);
+
+            if ($logoutOtherDevices) {
+                $version++;
+                $upsert = $pdo->prepare(
+                    'INSERT INTO user_security (user_id, session_version) VALUES (:id, :v)
+                     ON CONFLICT(user_id) DO UPDATE SET session_version = :v'
+                );
+                $upsert->execute([':id' => $userId, ':v' => $version]);
+                $pdo->prepare('DELETE FROM remember_tokens WHERE user_id = :id')->execute([':id' => $userId]);
+            }
+
+            $remember = null;
+            if ($rememberMe) {
+                $selector = bin2hex(random_bytes(9));
+                $validator = bin2hex(random_bytes(33));
+                $expiresAt = $now + (int) $this->security['remember_me_ttl_seconds'];
+
+                $insert = $pdo->prepare(
+                    'INSERT INTO remember_tokens (user_id, selector, validator_hash, session_version, expires_at_utc, created_at_utc, requested_ip, user_agent)
+                     VALUES (:user_id, :selector, :hash, :version, :expires, :created, :ip, :ua)'
+                );
+                $insert->execute([
+                    ':user_id' => $userId,
+                    ':selector' => $selector,
+                    ':hash' => hash('sha256', $validator),
+                    ':version' => $version,
+                    ':expires' => $expiresAt,
+                    ':created' => $now,
+                    ':ip' => $ip,
+                    ':ua' => substr($ua, 0, 255),
+                ]);
+
+                $remember = ['selector' => $selector, 'validator' => $validator, 'expires_at' => $expiresAt];
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+
+        return ['session_version' => $version, 'remember' => $remember];
+    }
+
+    /**
+     * Validates a "selector:validator" remember-me cookie value. On success,
+     * rotates the token (new selector/validator) and returns login details;
+     * on any failure the stale token row is removed and null is returned.
+     *
+     * @return array{user_id:int, session_version:int, selector:string, validator:string, expires_at:int}|null
+     */
+    public function loginFromRememberToken(string $cookieValue): ?array
+    {
+        if (!str_contains($cookieValue, ':')) {
+            return null;
+        }
+        [$selector, $validator] = explode(':', $cookieValue, 2);
+        if ($selector === '' || $validator === '') {
+            return null;
+        }
+
+        $pdo = $this->db->pdo();
+        $stmt = $pdo->prepare('SELECT * FROM remember_tokens WHERE selector = :selector');
+        $stmt->execute([':selector' => $selector]);
+        $token = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$token) {
+            return null;
+        }
+
+        $now = time();
+        $valid = (int) $token['expires_at_utc'] > $now
+            && hash_equals((string) $token['validator_hash'], hash('sha256', $validator));
+
+        if ($valid) {
+            $user = $this->findUserById((int) $token['user_id']);
+            $currentVersion = $user ? $this->sessionVersion((int) $user['id']) : null;
+            $valid = $user !== null && (int) $token['session_version'] === $currentVersion;
+        }
+
+        if (!$valid) {
+            $pdo->prepare('DELETE FROM remember_tokens WHERE id = :id')->execute([':id' => $token['id']]);
+            return null;
+        }
+
+        $newSelector = bin2hex(random_bytes(9));
+        $newValidator = bin2hex(random_bytes(33));
+        $expiresAt = $now + (int) $this->security['remember_me_ttl_seconds'];
+
+        $update = $pdo->prepare(
+            'UPDATE remember_tokens SET selector = :sel, validator_hash = :hash, expires_at_utc = :exp WHERE id = :id'
+        );
+        $update->execute([
+            ':sel' => $newSelector,
+            ':hash' => hash('sha256', $newValidator),
+            ':exp' => $expiresAt,
+            ':id' => $token['id'],
+        ]);
+
+        return [
+            'user_id' => (int) $token['user_id'],
+            'session_version' => $currentVersion,
+            'selector' => $newSelector,
+            'validator' => $newValidator,
+            'expires_at' => $expiresAt,
+        ];
+    }
+
+    public function revokeRememberTokenBySelector(string $selector): void
+    {
+        $this->db->pdo()->prepare('DELETE FROM remember_tokens WHERE selector = :selector')->execute([':selector' => $selector]);
+    }
+
     public function findUserByEmail(string $email): ?array
     {
         $stmt = $this->db->pdo()->prepare('SELECT * FROM users WHERE email = :email');

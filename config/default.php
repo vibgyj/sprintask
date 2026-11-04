@@ -18,6 +18,7 @@ return [
         'otp_email_max_requests' => 5,
         'otp_ip_window_seconds' => 3600,
         'otp_ip_max_requests' => 20,
+        'remember_me_ttl_seconds' => 30 * 24 * 3600,
     ],
     'mail' => [
         'transport' => (getenv('APP_ENV') ?: 'production') === 'development' ? 'log' : 'mail',
@@ -27,5 +28,6 @@ return [
     ],
     'session' => [
         'name' => 'sprintask_session',
+        'remember_cookie' => 'sprintask_remember',
     ],
 ];
