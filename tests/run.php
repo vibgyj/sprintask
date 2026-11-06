@@ -173,9 +173,12 @@ function testOwnershipCascadeAndTimerIndex(): void {
 
     sleep(1);
     $work->stopTimer(1);
-    $work->deleteCategory(1, 1);
+    assertThrows(static fn() => $work->deleteCategory(1, 1), 'Category delete must be blocked while it has time entries');
+    assertThrows(static fn() => $work->deleteTask(1, 1), 'Task delete must be blocked while it has time entries');
+
+    $pdo->exec('DELETE FROM categories WHERE id = 1');
     $count = (int) $pdo->query('SELECT COUNT(*) FROM time_entries WHERE user_id = 1')->fetchColumn();
-    assertTrue($count === 0, 'Cascade delete should remove entries');
+    assertTrue($count === 0, 'FK cascade should still remove entries at the DB level');
 
     unlink($path);
 }
@@ -192,8 +195,46 @@ function testReportClipping(): void {
     $end = (new DateTimeImmutable('2026-03-08 03:30:00', new DateTimeZone('America/New_York')))->setTimezone(new DateTimeZone('UTC'))->getTimestamp();
     $pdo->exec("INSERT INTO time_entries (user_id,task_id,started_at_utc,ended_at_utc,created_at_utc,updated_at_utc) VALUES (1,1,$start,$end,$now,$now)");
 
-    $report = (new ReportService($db))->build(1, 'America/New_York', 'week', '2026-03-08');
-    assertTrue($report['total_seconds'] > 0, 'DST week report should include clipped overlap');
+    $reports = new ReportService($db);
+    $week = $reports->report(1, 'America/New_York', '7d', '24h', '2026-03-07T00:00', null, $end + 10);
+    assertTrue($week['overall']['total_seconds'] === 3600, 'DST 7d report should count the real 1h of the entry');
+    assertTrue(count($week['buckets']) === 7, '7d range aggregated by 24h should yield 7 buckets');
+    assertTrue($week['buckets'][1]['total_seconds'] === 3600, 'DST day bucket should hold the entry');
+    assertTrue($week['buckets'][1]['end_local']->getTimestamp() - $week['buckets'][1]['start_local']->getTimestamp() === 23 * 3600, 'DST day bucket should be a 23h calendar day');
+
+    $bucketSum = array_sum(array_map(static fn(array $b): int => $b['total_seconds'], $week['buckets']));
+    assertTrue($bucketSum === $week['overall']['total_seconds'], 'Bucket totals should add up to the whole-range total');
+
+    $straddle = $reports->report(1, 'America/New_York', '7d', '24h', '2026-03-08T02:00', null, $end + 10);
+    assertTrue($straddle['start_defaulted'] === true, 'Non-existent local time (DST gap) should not be accepted as a start');
+    $overflow = $reports->report(1, 'America/New_York', '7d', '24h', '2026-02-31T25:70', null, $end + 10);
+    assertTrue($overflow['start_defaulted'] === true, 'Overflowing start date/time should fall back to the default start');
+
+    $clipped = $reports->report(1, 'America/New_York', '24h', '24h', '2026-03-08T03:00', null, $end + 10);
+    assertTrue($clipped['overall']['total_seconds'] === 1800, 'Report should clip entries to the window start');
+    $tree = $clipped['overall']['categories'];
+    assertTrue(count($tree) === 1 && $tree[0]['tasks'][0]['name'] === 'Code' && count($tree[0]['tasks'][0]['items']) === 1, 'Report tree should be category > task > entry');
+    $item = $tree[0]['tasks'][0]['items'][0];
+    assertTrue($item['clipped_seconds'] === 1800 && $item['seconds'] === 3600, 'Items should carry both clipped and full durations');
+
+    $clamped = $reports->report(1, 'America/New_York', '24h', '30d', '2026-03-08T03:00', null, $end + 10);
+    assertTrue($clamped['aggregate'] === '24h' && count($clamped['buckets']) === 1, 'Aggregate larger than range should clamp to the range');
+
+    $pdo->exec("INSERT INTO tasks (user_id,category_id,name,created_at_utc) VALUES (1,1,'Review',$now)");
+    $pdo->exec('INSERT INTO time_entries (user_id,task_id,started_at_utc,ended_at_utc,created_at_utc,updated_at_utc) VALUES (1,2,' . ($start - 600) . ',' . $start . ",$now,$now)");
+    $filtered = $reports->report(1, 'America/New_York', '7d', '7d', '2026-03-07T00:00', 2, $end + 10);
+    assertTrue($filtered['overall']['total_seconds'] === 600, 'Task filter should restrict report to that task');
+
+    $defaulted = $reports->report(1, 'America/New_York', '7d', '24h', '', null, $end + 10);
+    assertTrue($defaulted['start_defaulted'] === true && $defaulted['start_local']->format('H:i') === '00:00', 'Missing start should default to local midnight');
+    assertTrue($defaulted['end_local']->format('Y-m-d') === '2026-03-09', '7d default window should end at the end of today');
+
+    $history = $reports->history(1, '24h', $end + 60);
+    assertTrue($history['total_seconds'] === 3600 + 600, 'History should aggregate completed entries in the rolling window');
+    $pdo->exec("INSERT INTO time_entries (user_id,task_id,started_at_utc,ended_at_utc,created_at_utc,updated_at_utc) VALUES (1,1,$end,NULL,$now,$now)");
+    $historyRunning = $reports->history(1, '24h', $end + 60);
+    assertTrue($historyRunning['total_seconds'] === 3600 + 600, 'History should exclude the running timer');
+    assertTrue(ReportService::normalizeRange('bogus') === '7d', 'Unknown ranges should fall back to 7d');
 
     unlink($path);
 }
@@ -348,7 +389,7 @@ function renderDashboardTemplateForTest(array $data): string {
         'user' => ['name' => 'Tester', 'timezone' => 'UTC'],
         'composer' => ['categories' => [], 'tasks' => []],
         'categories' => [],
-        'entries' => [],
+        'history' => ['range' => '7d', 'categories' => [], 'total_seconds' => 0],
         'running' => null,
         'csrf_token' => 'test-csrf',
         'url' => static fn(string $path = '/'): string => $path,
@@ -470,8 +511,123 @@ function testRememberTokenExpiry(): void {
     }
 }
 
+function testDashboardHistoryTreeRendering(): void {
+    $html = renderDashboardTemplateForTest([
+        'server_now_utc' => 10_000,
+        'history' => [
+            'range' => '24h',
+            'total_seconds' => 3600,
+            'categories' => [[
+                'id' => 1,
+                'name' => 'Build <x>',
+                'seconds' => 3600,
+                'tasks' => [[
+                    'id' => 7,
+                    'name' => 'Code',
+                    'seconds' => 3600,
+                    'items' => [[
+                        'id' => 42,
+                        'started_at_utc' => 1_000,
+                        'ended_at_utc' => 8_200,
+                        'seconds' => 7200,
+                        'clipped_seconds' => 3600,
+                    ]],
+                ]],
+            ]],
+        ],
+    ]);
+    assertTrue(str_contains($html, '<details class="tree-node tree-category" open>'), 'Categories should render expanded by default');
+    assertTrue(str_contains($html, '<details class="tree-node tree-task">'), 'Tasks should render collapsed by default');
+    assertTrue(str_contains($html, 'Build &lt;x&gt;'), 'Tree labels must be escaped');
+    assertTrue(str_contains($html, 'id="entry-detail-42"') && str_contains($html, 'name="range" value="24h"'), 'Entries should render edit forms that keep the range');
+    assertTrue(str_contains($html, 'aria-current="page">24h<'), 'Active range filter should be marked');
+    assertTrue(str_contains($html, '01h 00m 00s <small class="tree-partial"') && str_contains($html, 'of 2h 00m'), 'Entries straddling the range should show the counted part and their full length');
+    assertTrue(str_contains($html, 'form="resume-task-7"') && str_contains($html, 'id="resume-task-7"'), 'Task rows should render a Resume button wired to its form');
+    assertTrue(str_contains($html, 'name="range" value="24h"'), 'Manual entry and entry forms should carry the history range');
+}
+
+function testViewStatePaths(): void {
+    assertTrue(\App\ViewState::historyPath('7d') === '/', 'Default history range should have no query');
+    assertTrue(\App\ViewState::historyPath('30d') === '/?range=30d', 'Non-default history range should be kept');
+    assertTrue(\App\ViewState::historyPath('evil') === '/', 'Unknown range should fall back to the default path');
+    assertTrue(\App\ViewState::settingsPath(['sort' => 'category', 'dir' => 'asc', 'per' => '10', 'page' => '1']) === '/settings', 'Default grid state should have no query');
+    assertTrue(\App\ViewState::settingsPath(['grid_sort' => 'task', 'grid_dir' => 'desc', 'grid_per' => '50', 'grid_page' => '3'], 'grid_') === '/settings?sort=task&dir=desc&per=50&page=3', 'Posted grid state should round-trip');
+    assertTrue(\App\ViewState::settingsPath(['sort' => 'x', 'per' => '7', 'page' => '-2']) === '/settings', 'Invalid grid state should be dropped');
+}
+
+function testSettingsGridRowsAndRename(): void {
+    [$db, $path] = setupDb();
+    $pdo = $db->pdo();
+    $now = time();
+    $pdo->exec("INSERT INTO users (email,name,timezone,theme,created_at_utc) VALUES ('grid@test','Grid','UTC','system',$now),('other@test','O','UTC','system',$now)");
+    $pdo->exec("INSERT INTO categories (user_id,name,created_at_utc) VALUES (1,'beta',$now),(1,'Alpha',$now),(1,'Empty',$now),(2,'Theirs',$now)");
+    $pdo->exec("INSERT INTO tasks (user_id,category_id,name,created_at_utc) VALUES (1,1,'zeta',$now),(1,1,'Eta',$now),(1,2,'Mu',$now),(2,4,'X',$now)");
+    $pdo->exec("INSERT INTO time_entries (user_id,task_id,started_at_utc,ended_at_utc,created_at_utc,updated_at_utc) VALUES (1,3,100,200,$now,$now)");
+
+    $work = new WorkService($db);
+    $grid = $work->settingsRows(1);
+    $labels = array_map(static fn(array $r): string => $r['category_name'] . '/' . ($r['task_name'] ?? '-'), $grid['rows']);
+    assertTrue($labels === ['Alpha/Mu', 'beta/Eta', 'beta/zeta', 'Empty/-'], 'Grid should list task rows plus empty categories, sorted case-insensitively');
+    assertTrue((int) $grid['rows'][0]['entry_count'] === 1, 'Grid rows should carry entry counts');
+
+    $byTaskDesc = $work->settingsRows(1, 'task', 'desc');
+    assertTrue($byTaskDesc['rows'][0]['task_name'] === 'zeta', 'Grid should sort by task descending');
+
+    $paged = $work->settingsRows(1, 'category', 'asc', 9, 10);
+    assertTrue($paged['page'] === 1 && $paged['pages'] === 1 && $paged['per_page'] === 10, 'Out-of-range page should clamp');
+    assertTrue($work->settingsRows(1, 'category', 'asc', 1, 7)['per_page'] === 10, 'Unsupported page size should fall back to 10');
+
+    $work->updateCategoryAndTask(1, 1, 'Beta Renamed', 2, 'Eta 2');
+    $names = $pdo->query("SELECT c.name || '/' || t.name FROM tasks t JOIN categories c ON c.id = t.category_id WHERE t.user_id = 1 AND c.id = 1 ORDER BY t.id")->fetchAll(PDO::FETCH_COLUMN);
+    assertTrue($names === ['Beta Renamed/zeta', 'Beta Renamed/Eta 2'], 'Renaming a category from one row should apply to every row of that category');
+
+    assertThrows(static fn() => $work->updateCategoryAndTask(1, 1, 'alpha', 1, 'zeta'), 'Renaming onto an existing category name should fail');
+    assertTrue($pdo->query('SELECT name FROM categories WHERE id = 1')->fetchColumn() === 'Beta Renamed', 'Failed row edit should roll back');
+    assertThrows(static fn() => $work->updateCategoryAndTask(1, 2, 'Alpha', 1, 'hijack'), 'Task must belong to the edited category');
+    assertThrows(static fn() => $work->updateCategoryAndTask(1, 4, 'Mine', null, null), 'Cannot edit another user\'s category');
+
+    assertThrows(static fn() => $work->deleteTask(1, 3), 'Task with entries cannot be deleted');
+    $work->deleteTask(1, 2);
+    $work->deleteCategory(1, 3);
+    $remaining = (int) $pdo->query('SELECT COUNT(*) FROM categories WHERE user_id = 1')->fetchColumn();
+    assertTrue($remaining === 2, 'Categories without entries can be deleted');
+
+    unlink($path);
+}
+
+function testResumeTask(): void {
+    [$db, $path] = setupDb();
+    $pdo = $db->pdo();
+    $now = time();
+    $pdo->exec("INSERT INTO users (email,name,timezone,theme,created_at_utc) VALUES ('r@test','R','UTC','system',$now),('o@test','O','UTC','system',$now)");
+    $pdo->exec("INSERT INTO categories (user_id,name,created_at_utc) VALUES (1,'Build',$now),(2,'Theirs',$now)");
+    $pdo->exec("INSERT INTO tasks (user_id,category_id,name,created_at_utc) VALUES (1,1,'Code',$now),(1,1,'Review',$now),(2,2,'X',$now)");
+    $pdo->exec("INSERT INTO time_entries (user_id,task_id,started_at_utc,ended_at_utc,created_at_utc,updated_at_utc) VALUES (1,1,100,200,$now,$now)");
+
+    $work = new WorkService($db);
+    $work->resumeTask(1, 1);
+    $running = $work->runningEntry(1);
+    assertTrue($running !== null && (int) $running['task_id'] === 1, 'Resume should start a new running entry for the task');
+    assertTrue((int) $pdo->query('SELECT COUNT(*) FROM time_entries WHERE task_id = 1')->fetchColumn() === 2, 'Resume should create a new entry, not reopen the old one');
+
+    $work->resumeTask(1, 1);
+    assertTrue((int) $pdo->query('SELECT COUNT(*) FROM time_entries WHERE user_id = 1')->fetchColumn() === 2, 'Resuming the running task should be a no-op');
+
+    $work->resumeTask(1, 2);
+    $running = $work->runningEntry(1);
+    assertTrue($running !== null && (int) $running['task_id'] === 2, 'Resume should switch the running timer to the other task');
+    $open = (int) $pdo->query('SELECT COUNT(*) FROM time_entries WHERE user_id = 1 AND ended_at_utc IS NULL')->fetchColumn();
+    assertTrue($open === 1, 'Previous running timer should be stopped when resuming another task');
+
+    assertThrows(static fn() => $work->resumeTask(1, 3), 'Cannot resume another user\'s task');
+    assertTrue((int) $work->runningEntry(1)['task_id'] === 2, 'Failed resume must not stop the current timer');
+
+    unlink($path);
+}
+
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
+testResumeTask();
 testOtpThrottleAndLoginFlow();
 testRememberMeTokenLifecycle();
 testLogoutOtherDevicesInvalidatesTokensAndVersion();
@@ -485,5 +641,8 @@ testLocalTimeDisplayHelpers();
 testUrlBasePathHelpers();
 testAppRootResolver();
 testDashboardTimerBaselineRendering();
+testDashboardHistoryTreeRendering();
+testViewStatePaths();
+testSettingsGridRowsAndRename();
 
 echo "All tests passed\n";

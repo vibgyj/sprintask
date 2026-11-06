@@ -48,6 +48,26 @@ final class Util
         return $dt->format('Y-m-d h:i A');
     }
 
+    /** e.g. "Mon 03 Nov, 09:15 AM" */
+    public static function utcToLocalShort(int $utc, string $timezone): string
+    {
+        $dt = (new DateTimeImmutable('@' . $utc))->setTimezone(new DateTimeZone($timezone));
+        return $dt->format('D d M, h:i A');
+    }
+
+    public static function utcToLocalDate(int $utc, string $timezone): string
+    {
+        $dt = (new DateTimeImmutable('@' . $utc))->setTimezone(new DateTimeZone($timezone));
+        return $dt->format('Y-m-d');
+    }
+
+    /** Aggregate hours, e.g. "12h 05m" (minutes rounded down). */
+    public static function formatHours(int $seconds): string
+    {
+        $seconds = max(0, $seconds);
+        return sprintf('%dh %02dm', intdiv($seconds, 3600), intdiv($seconds % 3600, 60));
+    }
+
     public static function formatDuration(int $seconds): string
     {
         $h = intdiv($seconds, 3600);

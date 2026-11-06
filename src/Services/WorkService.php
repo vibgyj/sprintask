@@ -72,19 +72,29 @@ final class WorkService
         }
     }
 
+    /**
+     * Deletes a category (and its entry-less tasks). The "no time entries"
+     * condition is part of the DELETE itself, so an entry started concurrently
+     * can never be cascade-deleted between a check and the delete.
+     */
     public function deleteCategory(int $userId, int $categoryId): void
     {
-        $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $stmt = $pdo->prepare('DELETE FROM categories WHERE id = :id AND user_id = :user');
-            $stmt->execute([':id' => $categoryId, ':user' => $userId]);
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $e;
+        $stmt = $this->db->pdo()->prepare('DELETE FROM categories WHERE id = :id AND user_id = :user'
+            . ' AND NOT EXISTS (SELECT 1 FROM time_entries e JOIN tasks t ON t.id = e.task_id AND t.user_id = e.user_id WHERE e.user_id = :user AND t.category_id = :id)');
+        $stmt->execute([':id' => $categoryId, ':user' => $userId]);
+        if ($stmt->rowCount() > 0) {
+            return;
+        }
+
+        $countStmt = $this->db->pdo()->prepare('SELECT COUNT(*) FROM time_entries e JOIN tasks t ON t.id = e.task_id AND t.user_id = e.user_id WHERE e.user_id = :user AND t.category_id = :id');
+        $countStmt->execute([':user' => $userId, ':id' => $categoryId]);
+        $this->throwIfHasEntries('category', (int) $countStmt->fetchColumn());
+    }
+
+    private function throwIfHasEntries(string $what, int $entryCount): void
+    {
+        if ($entryCount > 0) {
+            throw new \RuntimeException(sprintf('Cannot delete %s: it has %d time %s. Delete those first.', $what, $entryCount, $entryCount === 1 ? 'entry' : 'entries'));
         }
     }
 
@@ -122,6 +132,93 @@ final class WorkService
         }
     }
 
+    /**
+     * Renames a category and/or one of its tasks atomically (settings grid row
+     * edit). Renaming the category applies to every task row in it, since rows
+     * share the category record.
+     */
+    public function updateCategoryAndTask(int $userId, int $categoryId, string $categoryName, ?int $taskId, ?string $taskName): void
+    {
+        $categoryName = trim($categoryName);
+        if ($categoryName === '') {
+            throw new \RuntimeException('Category name is required.');
+        }
+
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            $category = $this->findCategoryByIdForUser($userId, $categoryId);
+            if (!$category) {
+                throw new \RuntimeException('Category not found.');
+            }
+            if ($category['name'] !== $categoryName) {
+                $this->renameCategory($userId, $categoryId, $categoryName);
+            }
+
+            if (($taskId ?? 0) > 0) {
+                $task = $this->findTaskByIdForUser($userId, (int) $taskId);
+                if (!$task || (int) $task['category_id'] !== $categoryId) {
+                    throw new \RuntimeException('Task not found in that category.');
+                }
+                $taskName = trim((string) $taskName);
+                if ($task['name'] !== $taskName) {
+                    $this->renameTask($userId, (int) $taskId, $taskName);
+                }
+            }
+
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+    }
+
+    /**
+     * Flat category/task rows for the settings grid. Categories without tasks
+     * produce one row with a null task. entry_count drives delete blocking.
+     *
+     * @return array{rows: list<array>, total: int, page: int, pages: int, per_page: int, sort: string, dir: string}
+     */
+    public function settingsRows(int $userId, string $sort = 'category', string $dir = 'asc', int $page = 1, int $perPage = 10): array
+    {
+        $sort = in_array($sort, ['category', 'task'], true) ? $sort : 'category';
+        $dir = $dir === 'desc' ? 'desc' : 'asc';
+        $perPage = in_array($perPage, [10, 50, 100], true) ? $perPage : 10;
+
+        $stmt = $this->db->pdo()->prepare('SELECT c.id AS category_id, c.name AS category_name, t.id AS task_id, t.name AS task_name,'
+            . ' (SELECT COUNT(*) FROM time_entries e WHERE e.user_id = c.user_id AND e.task_id = t.id) AS entry_count'
+            . ' FROM categories c LEFT JOIN tasks t ON t.category_id = c.id AND t.user_id = c.user_id'
+            . ' WHERE c.user_id = :user');
+        $stmt->execute([':user' => $userId]);
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $primary = $sort === 'task' ? 'task_name' : 'category_name';
+        $secondary = $sort === 'task' ? 'category_name' : 'task_name';
+        usort($rows, static function (array $a, array $b) use ($primary, $secondary, $dir): int {
+            $cmp = strcasecmp((string) $a[$primary], (string) $b[$primary])
+                ?: strcasecmp((string) $a[$secondary], (string) $b[$secondary])
+                ?: ((int) $a['category_id'] <=> (int) $b['category_id'])
+                ?: ((int) $a['task_id'] <=> (int) $b['task_id']);
+            return $dir === 'desc' ? -$cmp : $cmp;
+        });
+
+        $total = count($rows);
+        $pages = max(1, (int) ceil($total / $perPage));
+        $page = min(max(1, $page), $pages);
+
+        return [
+            'rows' => array_slice($rows, ($page - 1) * $perPage, $perPage),
+            'total' => $total,
+            'page' => $page,
+            'pages' => $pages,
+            'per_page' => $perPage,
+            'sort' => $sort,
+            'dir' => $dir,
+        ];
+    }
+
     public function timerComposerOptions(int $userId): array
     {
         $pdo = $this->db->pdo();
@@ -139,20 +236,19 @@ final class WorkService
         ];
     }
 
+    /** Deletes a task only if it has no time entries (atomically, see deleteCategory). */
     public function deleteTask(int $userId, int $taskId): void
     {
-        $pdo = $this->db->pdo();
-        $pdo->beginTransaction();
-        try {
-            $stmt = $pdo->prepare('DELETE FROM tasks WHERE id = :id AND user_id = :user');
-            $stmt->execute([':id' => $taskId, ':user' => $userId]);
-            $pdo->commit();
-        } catch (\Throwable $e) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $e;
+        $stmt = $this->db->pdo()->prepare('DELETE FROM tasks WHERE id = :id AND user_id = :user'
+            . ' AND NOT EXISTS (SELECT 1 FROM time_entries WHERE user_id = :user AND task_id = :id)');
+        $stmt->execute([':id' => $taskId, ':user' => $userId]);
+        if ($stmt->rowCount() > 0) {
+            return;
         }
+
+        $countStmt = $this->db->pdo()->prepare('SELECT COUNT(*) FROM time_entries WHERE user_id = :user AND task_id = :id');
+        $countStmt->execute([':user' => $userId, ':id' => $taskId]);
+        $this->throwIfHasEntries('task', (int) $countStmt->fetchColumn());
     }
 
     public function runningEntry(int $userId): ?array
@@ -239,14 +335,46 @@ final class WorkService
         }
     }
 
+    /**
+     * Starts a new running entry for an existing task. Any timer already
+     * running on a different task is stopped first, in the same transaction;
+     * resuming the task that is already running is a no-op.
+     */
+    public function resumeTask(int $userId, int $taskId): void
+    {
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            if (!$this->findTaskByIdForUser($userId, $taskId)) {
+                throw new \RuntimeException('Task not found.');
+            }
+
+            $running = $this->runningEntry($userId);
+            if ($running && (int) $running['task_id'] === $taskId) {
+                $pdo->commit();
+                return;
+            }
+
+            $this->stopRunningEntry($pdo, $userId, time());
+            $this->insertRunningEntry($pdo, $userId, $taskId);
+            $pdo->commit();
+        } catch (\Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            if ($e instanceof \RuntimeException) {
+                throw $e;
+            }
+            throw new \RuntimeException('Could not resume task.');
+        }
+    }
+
     public function stopTimer(int $userId): void
     {
         $pdo = $this->db->pdo();
         $pdo->beginTransaction();
         try {
-            $now = time();
-            $stmt = $pdo->prepare('UPDATE time_entries SET ended_at_utc = CASE WHEN started_at_utc >= :ended THEN started_at_utc + 1 ELSE :ended END, updated_at_utc = :updated WHERE user_id = :user AND ended_at_utc IS NULL');
-            $stmt->execute([':ended' => $now, ':updated' => $now, ':user' => $userId]);
+            $this->stopRunningEntry($pdo, $userId, time());
             $pdo->commit();
         } catch (\Throwable $e) {
             if ($pdo->inTransaction()) {
@@ -254,6 +382,13 @@ final class WorkService
             }
             throw $e;
         }
+    }
+
+    /** Ends the user's running entry at $now (at least 1s after its start). */
+    private function stopRunningEntry(PDO $pdo, int $userId, int $now): void
+    {
+        $stmt = $pdo->prepare('UPDATE time_entries SET ended_at_utc = CASE WHEN started_at_utc >= :ended THEN started_at_utc + 1 ELSE :ended END, updated_at_utc = :updated WHERE user_id = :user AND ended_at_utc IS NULL');
+        $stmt->execute([':ended' => $now, ':updated' => $now, ':user' => $userId]);
     }
 
     public function createManualEntry(int $userId, int $taskId, string $startLocal, string $endLocal, string $timezone): void
@@ -285,15 +420,6 @@ final class WorkService
     {
         $stmt = $this->db->pdo()->prepare('DELETE FROM time_entries WHERE id = :id AND user_id = :user');
         $stmt->execute([':id' => $entryId, ':user' => $userId]);
-    }
-
-    public function recentEntries(int $userId, int $limit = 20): array
-    {
-        $stmt = $this->db->pdo()->prepare('SELECT e.*, t.name AS task_name, c.name AS category_name FROM time_entries e JOIN tasks t ON t.id = e.task_id AND t.user_id = e.user_id JOIN categories c ON c.id = t.category_id AND c.user_id = t.user_id WHERE e.user_id = :user AND e.ended_at_utc IS NOT NULL ORDER BY e.started_at_utc DESC LIMIT :lim');
-        $stmt->bindValue(':user', $userId, PDO::PARAM_INT);
-        $stmt->bindValue(':lim', $limit, PDO::PARAM_INT);
-        $stmt->execute();
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     private function resolveCategoryId(PDO $pdo, int $userId, string $categoryName, ?int $categoryId): int

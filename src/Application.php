@@ -168,42 +168,29 @@ final class Application
             return;
         }
 
-        if ($path === '/categories/create' && $method === 'POST') {
+        $settingsActions = [
+            '/categories/create' => fn() => $this->work->createCategory((int) $user['id'], (string) ($_POST['name'] ?? '')),
+            '/categories/update' => fn() => $this->work->renameCategory((int) $user['id'], (int) ($_POST['category_id'] ?? 0), (string) ($_POST['name'] ?? '')),
+            '/categories/delete' => fn() => $this->work->deleteCategory((int) $user['id'], (int) ($_POST['category_id'] ?? 0)),
+            '/tasks/create' => fn() => $this->work->createTask((int) $user['id'], (int) ($_POST['category_id'] ?? 0), (string) ($_POST['name'] ?? '')),
+            '/tasks/update' => fn() => $this->work->renameTask((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['name'] ?? '')),
+            '/tasks/delete' => fn() => $this->work->deleteTask((int) $user['id'], (int) ($_POST['task_id'] ?? 0)),
+            '/settings/rows/update' => fn() => $this->work->updateCategoryAndTask(
+                (int) $user['id'],
+                (int) ($_POST['category_id'] ?? 0),
+                (string) ($_POST['category_name'] ?? ''),
+                isset($_POST['task_id']) && $_POST['task_id'] !== '' ? (int) $_POST['task_id'] : null,
+                isset($_POST['task_name']) ? (string) $_POST['task_name'] : null
+            ),
+        ];
+        if (isset($settingsActions[$path]) && $method === 'POST') {
             $this->requireCsrf();
-            $this->work->createCategory((int) $user['id'], (string) ($_POST['name'] ?? ''));
-            $this->redirect('/settings');
-        }
-        if ($path === '/categories/update' && $method === 'POST') {
-            $this->requireCsrf();
-            $this->work->renameCategory((int) $user['id'], (int) ($_POST['category_id'] ?? 0), (string) ($_POST['name'] ?? ''));
-            $this->redirect('/settings');
-        }
-        if ($path === '/categories/delete' && $method === 'POST') {
-            $this->requireCsrf();
-            if (($_POST['confirm'] ?? '') !== 'DELETE') {
-                throw new \RuntimeException('Confirmation phrase missing.');
+            try {
+                $settingsActions[$path]();
+            } catch (\RuntimeException $e) {
+                $this->flash('error', $e->getMessage());
             }
-            $this->work->deleteCategory((int) $user['id'], (int) ($_POST['category_id'] ?? 0));
-            $this->redirect('/settings');
-        }
-
-        if ($path === '/tasks/create' && $method === 'POST') {
-            $this->requireCsrf();
-            $this->work->createTask((int) $user['id'], (int) ($_POST['category_id'] ?? 0), (string) ($_POST['name'] ?? ''));
-            $this->redirect('/settings');
-        }
-        if ($path === '/tasks/update' && $method === 'POST') {
-            $this->requireCsrf();
-            $this->work->renameTask((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['name'] ?? ''));
-            $this->redirect('/settings');
-        }
-        if ($path === '/tasks/delete' && $method === 'POST') {
-            $this->requireCsrf();
-            if (($_POST['confirm'] ?? '') !== 'DELETE') {
-                throw new \RuntimeException('Confirmation phrase missing.');
-            }
-            $this->work->deleteTask((int) $user['id'], (int) ($_POST['task_id'] ?? 0));
-            $this->redirect('/settings');
+            $this->redirect(ViewState::settingsPath($_POST, 'grid_'));
         }
 
         if ($path === '/timer/start' && $method === 'POST') {
@@ -221,6 +208,15 @@ final class Application
             }
             $this->redirect('/');
         }
+        if ($path === '/timer/resume' && $method === 'POST') {
+            $this->requireCsrf();
+            try {
+                $this->work->resumeTask((int) $user['id'], (int) ($_POST['task_id'] ?? 0));
+            } catch (\RuntimeException $e) {
+                $this->flash('error', $e->getMessage());
+            }
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
+        }
         if ($path === '/timer/stop' && $method === 'POST') {
             $this->requireCsrf();
             $this->work->stopTimer((int) $user['id']);
@@ -229,32 +225,58 @@ final class Application
 
         if ($path === '/entries/create' && $method === 'POST') {
             $this->requireCsrf();
-            $this->work->createManualEntry((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
-            $this->redirect('/');
+            try {
+                $this->work->createManualEntry((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
+            } catch (\RuntimeException $e) {
+                $this->flash('error', $e->getMessage());
+            }
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
         if ($path === '/entries/update' && $method === 'POST') {
             $this->requireCsrf();
-            $this->work->updateEntry((int) $user['id'], (int) ($_POST['entry_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
-            $this->redirect('/');
+            try {
+                $this->work->updateEntry((int) $user['id'], (int) ($_POST['entry_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
+            } catch (\RuntimeException $e) {
+                $this->flash('error', $e->getMessage());
+            }
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
         if ($path === '/entries/delete' && $method === 'POST') {
             $this->requireCsrf();
             $this->work->deleteEntry((int) $user['id'], (int) ($_POST['entry_id'] ?? 0));
-            $this->redirect('/');
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
 
         if ($path === '/reports' && $method === 'GET') {
-            $mode = ($_GET['mode'] ?? 'week') === 'month' ? 'month' : 'week';
-            $anchor = (string) ($_GET['date'] ?? date('Y-m-d'));
-            $report = $this->reports->build((int) $user['id'], (string) $user['timezone'], $mode, $anchor);
-            $this->render('reports.php', ['report' => $report, 'user' => $user]);
+            $taskId = (int) ($_GET['task_id'] ?? 0);
+            $report = $this->reports->report(
+                (int) $user['id'],
+                (string) $user['timezone'],
+                (string) ($_GET['range'] ?? '7d'),
+                (string) ($_GET['aggregate'] ?? '24h'),
+                (string) ($_GET['start'] ?? ''),
+                $taskId > 0 ? $taskId : null
+            );
+            $this->render('reports.php', [
+                'report' => $report,
+                'user' => $user,
+                'task_options' => $this->work->timerComposerOptions((int) $user['id'])['tasks'],
+            ]);
             return;
         }
 
         if ($path === '/settings' && $method === 'GET') {
+            $grid = $this->work->settingsRows(
+                (int) $user['id'],
+                (string) ($_GET['sort'] ?? 'category'),
+                (string) ($_GET['dir'] ?? 'asc'),
+                (int) ($_GET['page'] ?? 1),
+                (int) ($_GET['per'] ?? 10)
+            );
             $this->render('settings.php', [
                 'user' => $user,
                 'categories' => $this->work->categoriesWithTasks((int) $user['id']),
+                'grid' => $grid,
                 'timezone_options' => Util::timezoneOptions(),
             ]);
             return;
@@ -283,13 +305,13 @@ final class Application
         $categories = $this->work->categoriesWithTasks((int) $user['id']);
         $composer = $this->work->timerComposerOptions((int) $user['id']);
         $running = $this->work->runningEntry((int) $user['id']);
-        $entries = $this->work->recentEntries((int) $user['id']);
+        $history = $this->reports->history((int) $user['id'], ReportService::normalizeRange($_GET['range'] ?? null));
         $this->render('dashboard.php', [
             'user' => $user,
             'categories' => $categories,
             'composer' => $composer,
             'running' => $running,
-            'entries' => $entries,
+            'history' => $history,
             'server_now_utc' => time(),
         ]);
     }

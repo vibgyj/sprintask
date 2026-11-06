@@ -44,6 +44,102 @@
 
   initTimerComposer();
   initRecentEntryDisclosure();
+  initAutoSubmit();
+  initConfirmForms();
+  initSettingsGrid();
+
+  // Filters/selects that apply immediately. When the report range changes and
+  // the start picker still holds the server default, drop it so the server
+  // picks the default start for the new range.
+  function initAutoSubmit() {
+    document.querySelectorAll('[data-autosubmit]').forEach((input) => {
+      input.addEventListener('change', () => {
+        const form = input.form;
+        if (!form) return;
+        if (input.hasAttribute('data-range-input')) {
+          const start = form.querySelector('[data-default-start]');
+          if (start instanceof HTMLInputElement && start.value === start.defaultValue) {
+            start.disabled = true;
+          }
+        }
+        form.requestSubmit ? form.requestSubmit() : form.submit();
+      });
+    });
+  }
+
+  function initConfirmForms() {
+    document.querySelectorAll('form[data-confirm]').forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        if (!window.confirm(form.getAttribute('data-confirm') || 'Are you sure?')) {
+          event.preventDefault();
+        }
+      });
+    });
+  }
+
+  // Settings grid: inline row edit. Category renames preview on every row of
+  // that category; Cancel restores the original values.
+  function initSettingsGrid() {
+    const rows = Array.from(document.querySelectorAll('[data-grid-row]'));
+    if (!rows.length) return;
+
+    let editingRow = null;
+
+    const setLabels = (categoryId, text) => {
+      document.querySelectorAll(`[data-category-label="${categoryId}"]`).forEach((label) => {
+        label.textContent = text;
+      });
+    };
+
+    const setMode = (row, editing) => {
+      row.classList.toggle('is-editing', editing);
+      row.querySelectorAll('.grid-view').forEach((node) => { node.hidden = editing; });
+      row.querySelectorAll('.grid-edit').forEach((node) => { node.hidden = !editing; });
+    };
+
+    const cancel = (row) => {
+      row.querySelectorAll('input.grid-edit').forEach((input) => { input.value = input.defaultValue; });
+      const categoryInput = row.querySelector('[data-category-input]');
+      if (categoryInput) {
+        setLabels(categoryInput.getAttribute('data-category-input'), categoryInput.defaultValue);
+      }
+      setMode(row, false);
+      if (editingRow === row) editingRow = null;
+    };
+
+    rows.forEach((row) => {
+      const editButton = row.querySelector('[data-grid-edit]');
+      const cancelButton = row.querySelector('[data-grid-cancel]');
+      const categoryInput = row.querySelector('[data-category-input]');
+
+      editButton?.addEventListener('click', () => {
+        if (editingRow && editingRow !== row) cancel(editingRow);
+        editingRow = row;
+        setMode(row, true);
+        const first = row.querySelector('input.grid-edit');
+        if (first instanceof HTMLInputElement) {
+          first.focus();
+          first.select();
+        }
+      });
+
+      cancelButton?.addEventListener('click', () => {
+        cancel(row);
+        editButton?.focus();
+      });
+
+      categoryInput?.addEventListener('input', () => {
+        setLabels(categoryInput.getAttribute('data-category-input'), categoryInput.value);
+      });
+
+      row.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && row.classList.contains('is-editing')) {
+          cancel(row);
+          editButton?.focus();
+        }
+      });
+    });
+  }
 
   function initTimerComposer() {
     const composer = document.querySelector('[data-timer-composer]');
