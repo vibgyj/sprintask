@@ -44,11 +44,11 @@ if (!function_exists('sprintaskRenderTimeTree')) {
                 . '<span class="tree-pct">' . $pct . '%</span>';
         };
 
-        $treeId = 'tree-' . substr(md5(serialize([$tree['total_seconds'] ?? 0, count($categories), $opts['return_range'] ?? ''])), 0, 6);
-
         // Resume control for a task row. The <form> lives outside <summary>
         // (forms are not allowed there); the button points at it via form=.
-        $resumeCell = static function (array $task) use ($resume, $runningTaskId, $treeId, &$resumeForms): string {
+        // Ids are keyed by task, so the same task in several trees on one page
+        // shares a single form.
+        $resumeCell = static function (array $task) use ($resume, $runningTaskId, &$resumeForms): string {
             if (!$resume) {
                 return '';
             }
@@ -56,7 +56,7 @@ if (!function_exists('sprintaskRenderTimeTree')) {
             if ($taskId === $runningTaskId) {
                 return '<span class="tree-action"><span class="badge-running">Running</span></span>';
             }
-            $formId = $treeId . '-resume-' . $taskId;
+            $formId = 'resume-task-' . $taskId;
             $resumeForms[$formId] = $taskId;
             return '<span class="tree-action"><button type="submit" form="' . $formId . '" class="btn-resume" title="Start a new timer for ' . Util::e((string) $task['name']) . '">'
                 . '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg>Resume</button></span>';
@@ -98,6 +98,9 @@ if (!function_exists('sprintaskRenderTimeTree')) {
             echo '</div></details>';
         }
 
+        static $renderedResumeForms = [];
+        $resumeForms = array_diff_key($resumeForms, $renderedResumeForms);
+        $renderedResumeForms += $resumeForms;
         if ($resumeForms) {
             $url = $opts['url'];
             $csrf = Util::e((string) $opts['csrf']);
@@ -132,7 +135,15 @@ if (!function_exists('sprintaskRenderTimeTree')) {
         echo '<li class="tree-item">';
         echo '<div class="tree-row">';
         echo '<span class="tree-label" title="' . Util::e($fullRange) . '">' . Util::e($startText) . ' → ' . Util::e($endText) . '</span>';
-        echo '<span class="tree-dur">' . Util::e(Util::formatDuration((int) $item['seconds'])) . '</span>';
+        // Show the part inside the range so entries add up to the task total;
+        // flag entries that extend past the range edge with their full length.
+        $clipped = (int) ($item['clipped_seconds'] ?? $item['seconds']);
+        $full = (int) $item['seconds'];
+        echo '<span class="tree-dur">' . Util::e(Util::formatDuration($clipped));
+        if ($clipped < $full) {
+            echo ' <small class="tree-partial" title="Only the part inside this range is counted">of ' . Util::e(Util::formatHours($full)) . '</small>';
+        }
+        echo '</span>';
         if ($editable && $end !== null) {
             echo '<button type="button" class="entry-edit-toggle" data-entry-edit-toggle aria-expanded="false" aria-controls="entry-detail-' . $id . '" data-entry-id="' . $id . '">Edit</button>';
         }

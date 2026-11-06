@@ -21,7 +21,7 @@ $bucketFormat = $report['aggregate'] === '24h' ? 'D d M, h:i A' : 'D d M';
     <fieldset class="filter-group">
       <legend>Range</legend>
       <div class="segmented">
-        <?php foreach (ReportService::RANGE_LABELS as $key => $label): ?>
+        <?php foreach (array_keys(ReportService::RANGES) as $key): $label = $key; ?>
           <label><input type="radio" name="range" value="<?= Util::e($key) ?>" <?= $report['range'] === $key ? 'checked' : '' ?> data-autosubmit data-range-input><span><?= Util::e($label) ?></span></label>
         <?php endforeach; ?>
       </div>
@@ -30,8 +30,8 @@ $bucketFormat = $report['aggregate'] === '24h' ? 'D d M, h:i A' : 'D d M';
     <fieldset class="filter-group">
       <legend>Aggregate by</legend>
       <div class="segmented">
-        <?php foreach (ReportService::RANGE_LABELS as $key => $label): ?>
-          <?php $tooBig = ReportService::RANGE_SECONDS[$key] > ReportService::RANGE_SECONDS[$report['range']]; ?>
+        <?php foreach (array_keys(ReportService::RANGES) as $key): $label = $key; ?>
+          <?php $tooBig = ReportService::rangeSeconds($key) > ReportService::rangeSeconds($report['range']); ?>
           <label class="<?= $tooBig ? 'disabled' : '' ?>"><input type="radio" name="aggregate" value="<?= Util::e($key) ?>" <?= $report['aggregate'] === $key ? 'checked' : '' ?> <?= $tooBig ? 'disabled' : '' ?> data-autosubmit><span><?= Util::e($label) ?></span></label>
         <?php endforeach; ?>
       </div>

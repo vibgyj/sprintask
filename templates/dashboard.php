@@ -66,8 +66,8 @@ $historyTotal = (int) ($history['total_seconds'] ?? 0);
   <div class="card-head">
     <h3>History</h3>
     <nav class="segmented" aria-label="History range">
-      <?php foreach (\App\Services\ReportService::RANGE_LABELS as $rangeKey => $rangeLabel): ?>
-        <a href="<?= Util::e($url($rangeKey === '7d' ? '/' : '/?range=' . $rangeKey)) ?>" class="<?= $historyRange === $rangeKey ? 'active' : '' ?>"<?= $historyRange === $rangeKey ? ' aria-current="page"' : '' ?>><?= Util::e($rangeLabel) ?></a>
+      <?php foreach (array_keys(\App\Services\ReportService::RANGES) as $rangeKey): ?>
+        <a href="<?= Util::e($url(\App\ViewState::historyPath($rangeKey))) ?>" class="<?= $historyRange === $rangeKey ? 'active' : '' ?>"<?= $historyRange === $rangeKey ? ' aria-current="page"' : '' ?>><?= Util::e($rangeKey) ?></a>
       <?php endforeach; ?>
     </nav>
   </div>
@@ -89,6 +89,7 @@ $historyTotal = (int) ($history['total_seconds'] ?? 0);
   <h3>Add manual entry</h3>
   <form method="post" action="<?= Util::e($url('/entries/create')) ?>" class="manual-entry-row">
     <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
+    <input type="hidden" name="range" value="<?= Util::e($historyRange) ?>">
     <label class="sr-only" for="manual-task">Task</label>
     <select id="manual-task" name="task_id" required>
       <option value="">Task…</option>

@@ -1,25 +1,13 @@
 <?php
 
 use App\Util;
+use App\ViewState;
 
 $grid = $grid ?? ['rows' => [], 'total' => 0, 'page' => 1, 'pages' => 1, 'per_page' => 10, 'sort' => 'category', 'dir' => 'asc'];
+$gridCurrent = ['sort' => $grid['sort'], 'dir' => $grid['dir'], 'per' => (string) $grid['per_page'], 'page' => (string) $grid['page']];
 
 /** Settings URL with the current grid state, overridden by $changes. */
-$gridUrl = static function (array $changes) use ($grid, $url): string {
-    $query = array_merge([
-        'sort' => $grid['sort'],
-        'dir' => $grid['dir'],
-        'per' => (string) $grid['per_page'],
-        'page' => (string) $grid['page'],
-    ], $changes);
-    $defaults = ['sort' => 'category', 'dir' => 'asc', 'per' => '10', 'page' => '1'];
-    foreach ($defaults as $key => $default) {
-        if ((string) $query[$key] === $default) {
-            unset($query[$key]);
-        }
-    }
-    return $url('/settings' . ($query ? '?' . http_build_query($query) : ''));
-};
+$gridUrl = static fn(array $changes): string => $url(ViewState::settingsPath(array_merge($gridCurrent, $changes)));
 
 $sortLink = static function (string $column, string $label) use ($grid, $gridUrl): string {
     $active = $grid['sort'] === $column;
@@ -29,11 +17,13 @@ $sortLink = static function (string $column, string $label) use ($grid, $gridUrl
         . Util::e($label) . ' <span aria-hidden="true">' . $arrow . '</span></a>';
 };
 
-$gridState = static function () use ($grid): string {
-    return '<input type="hidden" name="grid_sort" value="' . Util::e($grid['sort']) . '">'
-        . '<input type="hidden" name="grid_dir" value="' . Util::e($grid['dir']) . '">'
-        . '<input type="hidden" name="grid_per" value="' . (int) $grid['per_page'] . '">'
-        . '<input type="hidden" name="grid_page" value="' . (int) $grid['page'] . '">';
+/** Hidden grid_* fields so POST handlers can redirect back to the same grid view. */
+$gridState = static function () use ($gridCurrent): string {
+    $html = '';
+    foreach ($gridCurrent as $key => $value) {
+        $html .= '<input type="hidden" name="grid_' . $key . '" value="' . Util::e($value) . '">';
+    }
+    return $html;
 };
 
 $ariaSort = static fn(string $column): string => $grid['sort'] === $column ? ($grid['dir'] === 'asc' ? 'ascending' : 'descending') : 'none';

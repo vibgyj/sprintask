@@ -19,25 +19,17 @@ use PDO;
  */
 final class ReportService
 {
-    /** Range key => local calendar interval spec. */
+    /**
+     * Range key => local calendar interval spec and nominal length in seconds.
+     * Keys double as display labels; order is smallest to largest.
+     */
     public const RANGES = [
-        '24h' => 'P1D',
-        '7d' => 'P7D',
-        '30d' => 'P30D',
+        '24h' => ['interval' => 'P1D', 'seconds' => 86400],
+        '7d' => ['interval' => 'P7D', 'seconds' => 604800],
+        '30d' => ['interval' => 'P30D', 'seconds' => 2592000],
     ];
 
-    /** Range key => nominal length in seconds (used for ordering/clamping). */
-    public const RANGE_SECONDS = [
-        '24h' => 86400,
-        '7d' => 604800,
-        '30d' => 2592000,
-    ];
-
-    public const RANGE_LABELS = [
-        '24h' => '24h',
-        '7d' => '7d',
-        '30d' => '30d',
-    ];
+    public const DEFAULT_HISTORY_RANGE = '7d';
 
     /** Hard cap on the number of aggregation buckets rendered. */
     private const MAX_BUCKETS = 31;
@@ -46,9 +38,19 @@ final class ReportService
     {
     }
 
-    public static function normalizeRange(mixed $value, string $default = '7d'): string
+    public static function normalizeRange(mixed $value, string $default = self::DEFAULT_HISTORY_RANGE): string
     {
         return is_string($value) && isset(self::RANGES[$value]) ? $value : $default;
+    }
+
+    public static function rangeSeconds(string $range): int
+    {
+        return self::RANGES[self::normalizeRange($range)]['seconds'];
+    }
+
+    public static function rangeInterval(string $range): DateInterval
+    {
+        return new DateInterval(self::RANGES[self::normalizeRange($range)]['interval']);
     }
 
     /**
@@ -60,7 +62,7 @@ final class ReportService
     {
         $now ??= time();
         $range = self::normalizeRange($range);
-        $startUtc = $now - self::RANGE_SECONDS[$range];
+        $startUtc = $now - self::rangeSeconds($range);
 
         $rows = $this->fetchEntries($userId, $startUtc, $now, $now, null, false);
         $tree = $this->buildTree($rows, $startUtc, $now, $now, true);
@@ -90,38 +92,33 @@ final class ReportService
         $tz = new DateTimeZone($timezone);
         $range = self::normalizeRange($range);
         $aggregate = self::normalizeRange($aggregate, '24h');
-        if (self::RANGE_SECONDS[$aggregate] > self::RANGE_SECONDS[$range]) {
+        if (self::rangeSeconds($aggregate) > self::rangeSeconds($range)) {
             $aggregate = $range;
         }
 
-        $startDefaulted = false;
-        $start = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $startLocal, $tz);
-        if ($start === false) {
-            $start = self::defaultReportStart($range, $tz, $now);
-            $startDefaulted = true;
-        }
-        $end = $start->add(new DateInterval(self::RANGES[$range]));
+        $start = self::parseLocalStart($startLocal, $tz);
+        $startDefaulted = $start === null;
+        $start ??= self::defaultReportStart($range, $tz, $now);
+        $end = $start->add(self::rangeInterval($range));
 
         $startUtc = $start->getTimestamp();
         $endUtc = $end->getTimestamp();
 
         $rows = $this->fetchEntries($userId, $startUtc, $endUtc, $now, $taskId, true);
-        $overall = $this->buildTree($rows, $startUtc, $endUtc, $now, true);
+
+        $bounds = [];
+        $step = self::rangeInterval($aggregate);
+        for ($bucketStart = $start; $bucketStart < $end && count($bounds) < self::MAX_BUCKETS; $bucketStart = $bucketEnd) {
+            $bucketEnd = min($bucketStart->add($step), $end);
+            $bounds[] = [$bucketStart, $bucketEnd];
+        }
 
         $buckets = [];
-        $step = new DateInterval(self::RANGES[$aggregate]);
-        $bucketStart = $start;
-        while ($bucketStart < $end && count($buckets) < self::MAX_BUCKETS) {
-            $bucketEnd = $bucketStart->add($step);
-            if ($bucketEnd > $end) {
-                $bucketEnd = $end;
-            }
-            $tree = $this->buildTree($rows, $bucketStart->getTimestamp(), $bucketEnd->getTimestamp(), $now, false);
+        foreach ($this->buildBucketTrees($rows, $bounds, $now) as $i => $tree) {
             $buckets[] = [
-                'start_local' => $bucketStart,
-                'end_local' => $bucketEnd,
+                'start_local' => $bounds[$i][0],
+                'end_local' => $bounds[$i][1],
             ] + $tree;
-            $bucketStart = $bucketEnd;
         }
 
         return [
@@ -132,7 +129,7 @@ final class ReportService
             'end_local' => $end,
             'start_input' => $start->format('Y-m-d\TH:i'),
             'start_defaulted' => $startDefaulted,
-            'overall' => $overall,
+            'overall' => $this->buildTree($rows, $startUtc, $endUtc, $now, true),
             'buckets' => $buckets,
         ];
     }
@@ -144,8 +141,21 @@ final class ReportService
     public static function defaultReportStart(string $range, DateTimeZone $tz, ?int $now = null): DateTimeImmutable
     {
         $today = (new DateTimeImmutable('@' . ($now ?? time())))->setTimezone($tz)->setTime(0, 0);
-        $days = intdiv(self::RANGE_SECONDS[self::normalizeRange($range)], 86400);
+        $days = intdiv(self::rangeSeconds($range), 86400);
         return $today->modify('-' . ($days - 1) . ' days');
+    }
+
+    /**
+     * Parses a datetime-local value strictly. createFromFormat() rolls
+     * overflowing parts over (Feb 31 => Mar 3), so the value must round-trip.
+     */
+    private static function parseLocalStart(string $value, DateTimeZone $tz): ?DateTimeImmutable
+    {
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i', $value, $tz);
+        if ($parsed === false || $parsed->format('Y-m-d\TH:i') !== $value) {
+            return null;
+        }
+        return $parsed;
     }
 
     private function fetchEntries(int $userId, int $startUtc, int $endUtc, int $now, ?int $taskId, bool $includeRunning): array
@@ -183,49 +193,107 @@ final class ReportService
      */
     private function buildTree(array $rows, int $startUtc, int $endUtc, int $now, bool $withItems): array
     {
-        $categories = [];
-        $total = 0;
+        $acc = self::emptyTree();
+        foreach ($rows as $row) {
+            [$entryStart, $entryEnd] = self::entrySpan($row, $now);
+            $clipped = min($entryEnd, $endUtc) - max($entryStart, $startUtc);
+            if ($clipped > 0) {
+                self::addToTree($acc, $row, $clipped, $entryStart, $entryEnd, $withItems);
+            }
+        }
+        return self::finishTree($acc);
+    }
+
+    /**
+     * One pass over the rows for all buckets: each entry is added only to the
+     * contiguous buckets it overlaps (found by binary search), instead of
+     * scanning every row once per bucket.
+     *
+     * @param list<array{0: DateTimeImmutable, 1: DateTimeImmutable}> $bounds contiguous, ascending
+     * @return list<array{categories: list<array>, total_seconds: int}>
+     */
+    private function buildBucketTrees(array $rows, array $bounds, int $now): array
+    {
+        $edges = array_map(static fn(array $b): array => [$b[0]->getTimestamp(), $b[1]->getTimestamp()], $bounds);
+        $accs = array_fill(0, count($edges), self::emptyTree());
+        $count = count($edges);
 
         foreach ($rows as $row) {
-            $entryStart = (int) $row['started_at_utc'];
-            $entryEnd = $row['ended_at_utc'] === null ? $now : (int) $row['ended_at_utc'];
-            $clipped = min($entryEnd, $endUtc) - max($entryStart, $startUtc);
-            if ($clipped <= 0) {
-                continue;
+            [$entryStart, $entryEnd] = self::entrySpan($row, $now);
+
+            // First bucket whose end is after the entry start.
+            $lo = 0;
+            $hi = $count;
+            while ($lo < $hi) {
+                $mid = intdiv($lo + $hi, 2);
+                if ($edges[$mid][1] <= $entryStart) {
+                    $lo = $mid + 1;
+                } else {
+                    $hi = $mid;
+                }
             }
 
-            $catId = (int) $row['category_id'];
-            $taskId = (int) $row['task_id'];
-
-            $categories[$catId] ??= [
-                'id' => $catId,
-                'name' => (string) $row['category_name'],
-                'seconds' => 0,
-                'tasks' => [],
-            ];
-            $categories[$catId]['tasks'][$taskId] ??= [
-                'id' => $taskId,
-                'name' => (string) $row['task_name'],
-                'seconds' => 0,
-                'items' => [],
-            ];
-
-            $categories[$catId]['seconds'] += $clipped;
-            $categories[$catId]['tasks'][$taskId]['seconds'] += $clipped;
-            $total += $clipped;
-
-            if ($withItems) {
-                $categories[$catId]['tasks'][$taskId]['items'][] = [
-                    'id' => (int) $row['id'],
-                    'started_at_utc' => $entryStart,
-                    'ended_at_utc' => $row['ended_at_utc'] === null ? null : $entryEnd,
-                    'seconds' => $entryEnd - $entryStart,
-                    'clipped_seconds' => $clipped,
-                ];
+            for ($i = $lo; $i < $count && $edges[$i][0] < $entryEnd; $i++) {
+                $clipped = min($entryEnd, $edges[$i][1]) - max($entryStart, $edges[$i][0]);
+                if ($clipped > 0) {
+                    self::addToTree($accs[$i], $row, $clipped, $entryStart, $entryEnd, false);
+                }
             }
         }
 
+        return array_map([self::class, 'finishTree'], $accs);
+    }
+
+    /** @return array{0: int, 1: int} entry [start, end), running entries end at $now */
+    private static function entrySpan(array $row, int $now): array
+    {
+        $start = (int) $row['started_at_utc'];
+        return [$start, $row['ended_at_utc'] === null ? $now : (int) $row['ended_at_utc']];
+    }
+
+    private static function emptyTree(): array
+    {
+        return ['categories' => [], 'total_seconds' => 0];
+    }
+
+    private static function addToTree(array &$acc, array $row, int $clipped, int $entryStart, int $entryEnd, bool $withItems): void
+    {
+        $catId = (int) $row['category_id'];
+        $taskId = (int) $row['task_id'];
+
+        $acc['categories'][$catId] ??= [
+            'id' => $catId,
+            'name' => (string) $row['category_name'],
+            'seconds' => 0,
+            'tasks' => [],
+        ];
+        $acc['categories'][$catId]['tasks'][$taskId] ??= [
+            'id' => $taskId,
+            'name' => (string) $row['task_name'],
+            'seconds' => 0,
+            'items' => [],
+        ];
+
+        $acc['categories'][$catId]['seconds'] += $clipped;
+        $acc['categories'][$catId]['tasks'][$taskId]['seconds'] += $clipped;
+        $acc['total_seconds'] += $clipped;
+
+        if ($withItems) {
+            $acc['categories'][$catId]['tasks'][$taskId]['items'][] = [
+                'id' => (int) $row['id'],
+                'started_at_utc' => $entryStart,
+                'ended_at_utc' => $row['ended_at_utc'] === null ? null : $entryEnd,
+                'seconds' => $entryEnd - $entryStart,
+                'clipped_seconds' => $clipped,
+            ];
+        }
+    }
+
+    /** Sorts categories/tasks by name and drops the id keys. */
+    private static function finishTree(array $acc): array
+    {
         $byName = static fn(array $a, array $b): int => strcasecmp($a['name'], $b['name']) ?: ($a['id'] <=> $b['id']);
+        $categories = $acc['categories'];
         uasort($categories, $byName);
         foreach ($categories as &$category) {
             uasort($category['tasks'], $byName);
@@ -235,7 +303,7 @@ final class ReportService
 
         return [
             'categories' => array_values($categories),
-            'total_seconds' => $total,
+            'total_seconds' => $acc['total_seconds'],
         ];
     }
 }

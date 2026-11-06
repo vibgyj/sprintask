@@ -449,6 +449,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .tree-task .tree-bar > span { background: color-mix(in srgb, var(--accent) 55%, var(--bar-track)); }
 .tree-pct { font-size: 0.78rem; color: var(--faint); text-align: right; font-variant-numeric: tabular-nums; }
 .tree-dur { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tree-partial { color: var(--faint); font-size: 0.78rem; }
 .tree-category > summary .tree-dur { font-weight: 600; }
 
 .tree-action { display: flex; justify-content: flex-end; }

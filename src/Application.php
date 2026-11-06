@@ -190,7 +190,7 @@ final class Application
             } catch (\RuntimeException $e) {
                 $this->flash('error', $e->getMessage());
             }
-            $this->redirect($this->settingsReturnPath($_POST));
+            $this->redirect(ViewState::settingsPath($_POST, 'grid_'));
         }
 
         if ($path === '/timer/start' && $method === 'POST') {
@@ -215,7 +215,7 @@ final class Application
             } catch (\RuntimeException $e) {
                 $this->flash('error', $e->getMessage());
             }
-            $this->redirect($this->dashboardReturnPath($_POST));
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
         if ($path === '/timer/stop' && $method === 'POST') {
             $this->requireCsrf();
@@ -225,8 +225,12 @@ final class Application
 
         if ($path === '/entries/create' && $method === 'POST') {
             $this->requireCsrf();
-            $this->work->createManualEntry((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
-            $this->redirect('/');
+            try {
+                $this->work->createManualEntry((int) $user['id'], (int) ($_POST['task_id'] ?? 0), (string) ($_POST['started_at'] ?? ''), (string) ($_POST['ended_at'] ?? ''), (string) $user['timezone']);
+            } catch (\RuntimeException $e) {
+                $this->flash('error', $e->getMessage());
+            }
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
         if ($path === '/entries/update' && $method === 'POST') {
             $this->requireCsrf();
@@ -235,12 +239,12 @@ final class Application
             } catch (\RuntimeException $e) {
                 $this->flash('error', $e->getMessage());
             }
-            $this->redirect($this->dashboardReturnPath($_POST));
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
         if ($path === '/entries/delete' && $method === 'POST') {
             $this->requireCsrf();
             $this->work->deleteEntry((int) $user['id'], (int) ($_POST['entry_id'] ?? 0));
-            $this->redirect($this->dashboardReturnPath($_POST));
+            $this->redirect(ViewState::historyPath($_POST['range'] ?? null));
         }
 
         if ($path === '/reports' && $method === 'GET') {
@@ -310,30 +314,6 @@ final class Application
             'history' => $history,
             'server_now_utc' => time(),
         ]);
-    }
-
-    /** Dashboard URL that keeps the history range filter after an entry POST. */
-    private function dashboardReturnPath(array $input): string
-    {
-        $range = ReportService::normalizeRange($input['range'] ?? null);
-        return $range === '7d' ? '/' : '/?range=' . rawurlencode($range);
-    }
-
-    /** Settings URL that keeps the grid's sort/page/size after a POST. */
-    private function settingsReturnPath(array $input): string
-    {
-        $query = [];
-        foreach (['sort' => ['category', 'task'], 'dir' => ['asc', 'desc'], 'per' => ['10', '50', '100']] as $key => $allowed) {
-            $value = (string) ($input['grid_' . $key] ?? '');
-            if (in_array($value, $allowed, true)) {
-                $query[$key] = $value;
-            }
-        }
-        $page = (int) ($input['grid_page'] ?? 0);
-        if ($page > 1) {
-            $query['page'] = (string) $page;
-        }
-        return '/settings' . ($query ? '?' . http_build_query($query) : '');
     }
 
     private function render(string $template, array $data = []): void

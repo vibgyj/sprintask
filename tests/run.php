@@ -202,10 +202,20 @@ function testReportClipping(): void {
     assertTrue($week['buckets'][1]['total_seconds'] === 3600, 'DST day bucket should hold the entry');
     assertTrue($week['buckets'][1]['end_local']->getTimestamp() - $week['buckets'][1]['start_local']->getTimestamp() === 23 * 3600, 'DST day bucket should be a 23h calendar day');
 
+    $bucketSum = array_sum(array_map(static fn(array $b): int => $b['total_seconds'], $week['buckets']));
+    assertTrue($bucketSum === $week['overall']['total_seconds'], 'Bucket totals should add up to the whole-range total');
+
+    $straddle = $reports->report(1, 'America/New_York', '7d', '24h', '2026-03-08T02:00', null, $end + 10);
+    assertTrue($straddle['start_defaulted'] === true, 'Non-existent local time (DST gap) should not be accepted as a start');
+    $overflow = $reports->report(1, 'America/New_York', '7d', '24h', '2026-02-31T25:70', null, $end + 10);
+    assertTrue($overflow['start_defaulted'] === true, 'Overflowing start date/time should fall back to the default start');
+
     $clipped = $reports->report(1, 'America/New_York', '24h', '24h', '2026-03-08T03:00', null, $end + 10);
     assertTrue($clipped['overall']['total_seconds'] === 1800, 'Report should clip entries to the window start');
     $tree = $clipped['overall']['categories'];
     assertTrue(count($tree) === 1 && $tree[0]['tasks'][0]['name'] === 'Code' && count($tree[0]['tasks'][0]['items']) === 1, 'Report tree should be category > task > entry');
+    $item = $tree[0]['tasks'][0]['items'][0];
+    assertTrue($item['clipped_seconds'] === 1800 && $item['seconds'] === 3600, 'Items should carry both clipped and full durations');
 
     $clamped = $reports->report(1, 'America/New_York', '24h', '30d', '2026-03-08T03:00', null, $end + 10);
     assertTrue($clamped['aggregate'] === '24h' && count($clamped['buckets']) === 1, 'Aggregate larger than range should clamp to the range');
@@ -518,8 +528,8 @@ function testDashboardHistoryTreeRendering(): void {
                     'items' => [[
                         'id' => 42,
                         'started_at_utc' => 1_000,
-                        'ended_at_utc' => 4_600,
-                        'seconds' => 3600,
+                        'ended_at_utc' => 8_200,
+                        'seconds' => 7200,
                         'clipped_seconds' => 3600,
                     ]],
                 ]],
@@ -531,6 +541,18 @@ function testDashboardHistoryTreeRendering(): void {
     assertTrue(str_contains($html, 'Build &lt;x&gt;'), 'Tree labels must be escaped');
     assertTrue(str_contains($html, 'id="entry-detail-42"') && str_contains($html, 'name="range" value="24h"'), 'Entries should render edit forms that keep the range');
     assertTrue(str_contains($html, 'aria-current="page">24h<'), 'Active range filter should be marked');
+    assertTrue(str_contains($html, '01h 00m 00s <small class="tree-partial"') && str_contains($html, 'of 2h 00m'), 'Entries straddling the range should show the counted part and their full length');
+    assertTrue(str_contains($html, 'form="resume-task-7"') && str_contains($html, 'id="resume-task-7"'), 'Task rows should render a Resume button wired to its form');
+    assertTrue(str_contains($html, 'name="range" value="24h"'), 'Manual entry and entry forms should carry the history range');
+}
+
+function testViewStatePaths(): void {
+    assertTrue(\App\ViewState::historyPath('7d') === '/', 'Default history range should have no query');
+    assertTrue(\App\ViewState::historyPath('30d') === '/?range=30d', 'Non-default history range should be kept');
+    assertTrue(\App\ViewState::historyPath('evil') === '/', 'Unknown range should fall back to the default path');
+    assertTrue(\App\ViewState::settingsPath(['sort' => 'category', 'dir' => 'asc', 'per' => '10', 'page' => '1']) === '/settings', 'Default grid state should have no query');
+    assertTrue(\App\ViewState::settingsPath(['grid_sort' => 'task', 'grid_dir' => 'desc', 'grid_per' => '50', 'grid_page' => '3'], 'grid_') === '/settings?sort=task&dir=desc&per=50&page=3', 'Posted grid state should round-trip');
+    assertTrue(\App\ViewState::settingsPath(['sort' => 'x', 'per' => '7', 'page' => '-2']) === '/settings', 'Invalid grid state should be dropped');
 }
 
 function testSettingsGridRowsAndRename(): void {
@@ -620,6 +642,7 @@ testUrlBasePathHelpers();
 testAppRootResolver();
 testDashboardTimerBaselineRendering();
 testDashboardHistoryTreeRendering();
+testViewStatePaths();
 testSettingsGridRowsAndRename();
 
 echo "All tests passed\n";
