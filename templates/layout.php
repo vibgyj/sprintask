@@ -31,20 +31,20 @@ $bodyClass = $isSettingsPage ? 'settings-page' : ($template === 'dashboard.php' 
         <?php endforeach; ?>
       </section>
     <?php else: ?>
-      <div class="row" style="justify-content:space-between; margin-bottom: 1rem;">
-        <h1>Sprintask</h1>
-        <div class="row">
-          <?php if (!empty($current_user)): ?>
-            <a href="<?= Util::e($url('/')) ?>">Dashboard</a>
-            <a href="<?= Util::e($url('/reports')) ?>">Reports</a>
-            <a href="<?= Util::e($url('/settings')) ?>">Settings</a>
-            <form method="post" action="<?= Util::e($url('/logout')) ?>" style="margin:0;">
+      <header class="topbar">
+        <a class="brand" href="<?= Util::e($url('/')) ?>"><span class="brand-mark" aria-hidden="true"></span>Sprintask</a>
+        <?php if (!empty($current_user)): ?>
+          <nav class="nav" aria-label="Main">
+            <?php foreach (['dashboard.php' => ['/', 'Dashboard'], 'reports.php' => ['/reports', 'Reports'], 'settings.php' => ['/settings', 'Settings']] as $navTemplate => [$navPath, $navLabel]): ?>
+              <a href="<?= Util::e($url($navPath)) ?>"<?= $template === $navTemplate ? ' aria-current="page"' : '' ?>><?= Util::e($navLabel) ?></a>
+            <?php endforeach; ?>
+            <form method="post" action="<?= Util::e($url('/logout')) ?>" class="logout-form">
               <input type="hidden" name="_csrf" value="<?= Util::e($csrf_token) ?>">
-              <button type="submit">Log out</button>
+              <button type="submit" class="btn-ghost btn-small">Log out</button>
             </form>
-          <?php endif; ?>
-        </div>
-      </div>
+          </nav>
+        <?php endif; ?>
+      </header>
 
       <?php foreach (($flash ?? []) as $item): ?>
         <div class="flash <?= Util::e((string) $item['type']) ?>"><?= Util::e((string) $item['message']) ?></div>

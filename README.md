@@ -71,7 +71,9 @@ Persistence:
 4. Serve `public/` as docroot.
 
 If using PHP built-in server for quick local checks:
-- `php -S 127.0.0.1:8080 -t public public/index.php`
+- `APP_ENV=development php -S 127.0.0.1:8080 -t public`
+- Do **not** pass `public/index.php` as a router script: it would route every request, including `/assets/*.css` and `.js`, through the app, which redirects them and leaves pages unstyled. Without a router, the built-in server serves existing files directly and falls back to `public/index.php` for app routes.
+- `APP_ENV=development` makes OTP codes go to `var/log/mail.log` instead of `mail()`.
 
 ## Mail behavior
 - Production: native PHP `mail()` via host local MTA (cPanel typical setup)
