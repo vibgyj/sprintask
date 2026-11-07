@@ -625,6 +625,69 @@ function testResumeTask(): void {
     unlink($path);
 }
 
+function testCsrfTokenSurvivesSessionLoss(): void {
+    $_SESSION = [];
+    $_COOKIE = [];
+    $csrf = new App\Csrf('_csrf_token', 'sprintask_csrf', 3600, false);
+
+    $token = $csrf->token();
+    assertTrue(strlen($token) === 64, 'CSRF token should be 64 hex chars');
+    assertTrue($csrf->validate($token), 'Fresh token should validate');
+    assertTrue(!$csrf->validate('x'), 'Garbage token must fail');
+    assertTrue(!$csrf->validate(null), 'Missing token must fail');
+    assertTrue(!$csrf->validate(str_repeat('a', 64)), 'Unknown well-formed token must fail');
+
+    // Simulate the server-side session being garbage-collected while the page
+    // (and its embedded token) stays open in the browser for hours.
+    $_SESSION = [];
+    assertTrue($csrf->validate($token), 'Token from an open page must still validate after session loss');
+    assertTrue(($_SESSION['_csrf_token'] ?? null) === $token, 'Session token should be re-synced from cookie');
+    assertTrue($csrf->token() === $token, 'Re-rendering after session loss must reuse the same token');
+
+    // Without the cookie (e.g. cross-site request without credentials) and session, nothing validates.
+    $_SESSION = [];
+    $_COOKIE = [];
+    assertTrue(!$csrf->validate($token), 'Token must fail when neither session nor cookie hold it');
+
+    // Tampered cookie values are ignored.
+    $_COOKIE['sprintask_csrf'] = '<script>';
+    assertTrue(!$csrf->validate('<script>'), 'Malformed cookie token must be ignored');
+
+    // An intact session is checked against its own token only, never the cookie.
+    $_SESSION = [];
+    $_COOKIE = [];
+    $sessionToken = $csrf->token();
+    $_COOKIE['sprintask_csrf'] = str_repeat('b', 64);
+    assertTrue(!$csrf->validate(str_repeat('b', 64)), 'Cookie token must not override an existing session token');
+    assertTrue($csrf->validate($sessionToken), 'Session token must still validate');
+
+    // Rotation on login invalidates the pre-login token.
+    $before = $csrf->token();
+    $after = $csrf->rotate();
+    assertTrue($before !== $after, 'rotate() must issue a new token');
+    assertTrue(!$csrf->validate($before), 'Pre-rotation token must no longer validate');
+    assertTrue($csrf->validate($after), 'Rotated token must validate');
+
+    // Logout clears both copies so the next user gets a fresh token.
+    $csrf->clear();
+    assertTrue(!isset($_SESSION['_csrf_token']) && !isset($_COOKIE['sprintask_csrf']), 'clear() must remove session and cookie token');
+    assertTrue(!$csrf->validate($after), 'Cleared token must not validate');
+    assertTrue($csrf->token() !== $after, 'Token after logout must be new');
+
+    $_SESSION = [];
+    $_COOKIE = [];
+}
+
+function testIsUnderBasePath(): void {
+    assertTrue(UrlPath::isUnderBasePath('/anything', ''), 'Root mount contains every path');
+    assertTrue(UrlPath::isUnderBasePath('/sprintask', '/sprintask'), 'Base path itself is under base');
+    assertTrue(UrlPath::isUnderBasePath('/sprintask/settings', '/sprintask'), 'Child path is under base');
+    assertTrue(!UrlPath::isUnderBasePath('/other-app/page', '/sprintask'), 'Sibling app is not under base');
+    assertTrue(!UrlPath::isUnderBasePath('/sprintask2/page', '/sprintask'), 'Prefix-only match is not under base');
+}
+
+testCsrfTokenSurvivesSessionLoss();
+testIsUnderBasePath();
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testResumeTask();

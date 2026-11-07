@@ -27,7 +27,11 @@ final class Application
         Mailer $mailer,
         private readonly string $root
     ) {
-        $this->csrf = new Csrf($config['security']['csrf_key']);
+        $this->csrf = new Csrf(
+            $config['security']['csrf_key'],
+            (string) ($config['session']['csrf_cookie'] ?? 'sprintask_csrf'),
+            (int) ($config['security']['remember_me_ttl_seconds'] ?? 30 * 24 * 3600)
+        );
         $this->session = new Session($config['session']['name'] ?? 'sprintask_session');
         $this->auth = new AuthService($database, $mailer, $config['security']);
         $this->work = new WorkService($database);
@@ -93,6 +97,7 @@ final class Application
             if ($result['ok']) {
                 $userId = (int) $result['user_id'];
                 $this->session->regenerate();
+                $this->csrf->rotate();
                 $_SESSION['user_id'] = $userId;
                 $_SESSION['session_version'] = $this->auth->sessionVersion($userId);
                 unset($_SESSION['otp_register_name'], $_SESSION['otp_register_email']);
@@ -138,6 +143,7 @@ final class Application
                 $login = $this->auth->completeLogin($userId, $rememberMe, $logoutOtherDevices, $this->ip(), (string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
 
                 $this->session->regenerate();
+                $this->csrf->rotate();
                 $_SESSION['user_id'] = $userId;
                 $_SESSION['session_version'] = $login['session_version'];
                 unset($_SESSION['otp_login_email']);
@@ -156,6 +162,7 @@ final class Application
         if ($path === '/logout' && $method === 'POST') {
             $this->requireCsrf();
             $this->revokeRememberCookie();
+            $this->csrf->clear();
             $_SESSION = [];
             session_destroy();
             $this->redirect('/auth/login');
@@ -440,14 +447,45 @@ final class Application
 
     private function isHttps(): bool
     {
-        return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+        return Util::isHttps($_SERVER);
     }
 
     private function requireCsrf(): void
     {
-        if (!$this->csrf->validate($_POST['_csrf'] ?? null)) {
-            throw new \RuntimeException('Invalid CSRF token.');
+        if ($this->csrf->validate($_POST['_csrf'] ?? null)) {
+            return;
         }
+
+        // Don't dead-end the user on a 500 page: send them back to where they
+        // were with a fresh token so they can simply retry the action.
+        $this->flash('error', 'Your session expired or the form was out of date. Please try again.');
+        $this->redirect($this->refererAppPath() ?? '/');
+    }
+
+    /** Same-origin Referer converted to an app-relative path, or null. */
+    private function refererAppPath(): ?string
+    {
+        $referer = (string) ($_SERVER['HTTP_REFERER'] ?? '');
+        if ($referer === '') {
+            return null;
+        }
+        $parts = parse_url($referer);
+        if (!is_array($parts) || !isset($parts['host'], $parts['path'])) {
+            return null;
+        }
+        $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
+        $refHost = strtolower($parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : ''));
+        if ($host === '' || $refHost !== $host) {
+            return null;
+        }
+        if (!UrlPath::isUnderBasePath($parts['path'], $this->basePath)) {
+            return null;
+        }
+        $path = UrlPath::stripBasePath($parts['path'], $this->basePath);
+        if (!str_starts_with($path, '/') || str_starts_with($path, '//')) {
+            return null;
+        }
+        return $path . (isset($parts['query']) ? '?' . $parts['query'] : '');
     }
 
     private function flash(string $type, string $message): void

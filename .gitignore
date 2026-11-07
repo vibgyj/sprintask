@@ -3,6 +3,7 @@
 config/local.php
 var/data/
 var/log/
+var/sessions/
 .opencode
 *.zip
 error.txt

@@ -22,7 +22,11 @@ if (is_file($root . '/config/local.php')) {
 
 date_default_timezone_set($config['app']['timezone'] ?? 'UTC');
 
-$session = new App\Session($config['session']['name'] ?? 'sprintask_session');
+$session = new App\Session(
+    $config['session']['name'] ?? 'sprintask_session',
+    $config['session']['save_path'] ?? null,
+    (int) ($config['session']['idle_lifetime_seconds'] ?? 0)
+);
 $session->start();
 
 $database = new App\Database($config['db']['path']);
