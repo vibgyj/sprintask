@@ -64,6 +64,17 @@ final class UrlPath
         return $normalizedRequest;
     }
 
+    public static function isUnderBasePath(string $requestPath, string $basePath): bool
+    {
+        $normalizedBasePath = self::normalizePrefix($basePath);
+        if ($normalizedBasePath === '') {
+            return true;
+        }
+        $normalizedRequest = self::normalizeRequestPath($requestPath);
+        return $normalizedRequest === $normalizedBasePath
+            || str_starts_with($normalizedRequest, $normalizedBasePath . '/');
+    }
+
     public static function appPath(string $path, string $basePath): string
     {
         $normalizedPath = self::normalizeRequestPath($path);

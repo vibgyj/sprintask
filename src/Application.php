@@ -29,7 +29,8 @@ final class Application
     ) {
         $this->csrf = new Csrf(
             $config['security']['csrf_key'],
-            (string) ($config['session']['csrf_cookie'] ?? 'sprintask_csrf')
+            (string) ($config['session']['csrf_cookie'] ?? 'sprintask_csrf'),
+            (int) ($config['security']['remember_me_ttl_seconds'] ?? 30 * 24 * 3600)
         );
         $this->session = new Session($config['session']['name'] ?? 'sprintask_session');
         $this->auth = new AuthService($database, $mailer, $config['security']);
@@ -96,6 +97,7 @@ final class Application
             if ($result['ok']) {
                 $userId = (int) $result['user_id'];
                 $this->session->regenerate();
+                $this->csrf->rotate();
                 $_SESSION['user_id'] = $userId;
                 $_SESSION['session_version'] = $this->auth->sessionVersion($userId);
                 unset($_SESSION['otp_register_name'], $_SESSION['otp_register_email']);
@@ -141,6 +143,7 @@ final class Application
                 $login = $this->auth->completeLogin($userId, $rememberMe, $logoutOtherDevices, $this->ip(), (string) ($_SERVER['HTTP_USER_AGENT'] ?? ''));
 
                 $this->session->regenerate();
+                $this->csrf->rotate();
                 $_SESSION['user_id'] = $userId;
                 $_SESSION['session_version'] = $login['session_version'];
                 unset($_SESSION['otp_login_email']);
@@ -159,6 +162,7 @@ final class Application
         if ($path === '/logout' && $method === 'POST') {
             $this->requireCsrf();
             $this->revokeRememberCookie();
+            $this->csrf->clear();
             $_SESSION = [];
             session_destroy();
             $this->redirect('/auth/login');
@@ -443,7 +447,7 @@ final class Application
 
     private function isHttps(): bool
     {
-        return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+        return Util::isHttps($_SERVER);
     }
 
     private function requireCsrf(): void
@@ -472,6 +476,9 @@ final class Application
         $host = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
         $refHost = strtolower($parts['host'] . (isset($parts['port']) ? ':' . $parts['port'] : ''));
         if ($host === '' || $refHost !== $host) {
+            return null;
+        }
+        if (!UrlPath::isUnderBasePath($parts['path'], $this->basePath)) {
             return null;
         }
         $path = UrlPath::stripBasePath($parts['path'], $this->basePath);

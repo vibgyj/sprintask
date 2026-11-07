@@ -35,7 +35,13 @@ final class Session
             if (!is_dir($this->savePath)) {
                 @mkdir($this->savePath, 0700, true);
             }
-            if (is_dir($this->savePath) && is_writable($this->savePath)) {
+            if (!is_dir($this->savePath) || !is_writable($this->savePath)) {
+                error_log(sprintf(
+                    'Sprintask: session directory "%s" is missing or not writable; falling back to "%s", where idle sessions may be purged early.',
+                    $this->savePath,
+                    (string) session_save_path()
+                ));
+            } else {
                 session_save_path($this->savePath);
                 // Some distros disable PHP's own GC and rely on a cron job that
                 // only knows the default directory, so enable it for ours.
@@ -44,7 +50,7 @@ final class Session
             }
         }
 
-        $secure = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+        $secure = Util::isHttps($_SERVER);
 
         session_name($this->name);
         session_set_cookie_params([

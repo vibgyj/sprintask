@@ -628,7 +628,7 @@ function testResumeTask(): void {
 function testCsrfTokenSurvivesSessionLoss(): void {
     $_SESSION = [];
     $_COOKIE = [];
-    $csrf = new App\Csrf('_csrf_token', 'sprintask_csrf', false);
+    $csrf = new App\Csrf('_csrf_token', 'sprintask_csrf', 3600, false);
 
     $token = $csrf->token();
     assertTrue(strlen($token) === 64, 'CSRF token should be 64 hex chars');
@@ -653,11 +653,41 @@ function testCsrfTokenSurvivesSessionLoss(): void {
     $_COOKIE['sprintask_csrf'] = '<script>';
     assertTrue(!$csrf->validate('<script>'), 'Malformed cookie token must be ignored');
 
+    // An intact session is checked against its own token only, never the cookie.
+    $_SESSION = [];
+    $_COOKIE = [];
+    $sessionToken = $csrf->token();
+    $_COOKIE['sprintask_csrf'] = str_repeat('b', 64);
+    assertTrue(!$csrf->validate(str_repeat('b', 64)), 'Cookie token must not override an existing session token');
+    assertTrue($csrf->validate($sessionToken), 'Session token must still validate');
+
+    // Rotation on login invalidates the pre-login token.
+    $before = $csrf->token();
+    $after = $csrf->rotate();
+    assertTrue($before !== $after, 'rotate() must issue a new token');
+    assertTrue(!$csrf->validate($before), 'Pre-rotation token must no longer validate');
+    assertTrue($csrf->validate($after), 'Rotated token must validate');
+
+    // Logout clears both copies so the next user gets a fresh token.
+    $csrf->clear();
+    assertTrue(!isset($_SESSION['_csrf_token']) && !isset($_COOKIE['sprintask_csrf']), 'clear() must remove session and cookie token');
+    assertTrue(!$csrf->validate($after), 'Cleared token must not validate');
+    assertTrue($csrf->token() !== $after, 'Token after logout must be new');
+
     $_SESSION = [];
     $_COOKIE = [];
 }
 
+function testIsUnderBasePath(): void {
+    assertTrue(UrlPath::isUnderBasePath('/anything', ''), 'Root mount contains every path');
+    assertTrue(UrlPath::isUnderBasePath('/sprintask', '/sprintask'), 'Base path itself is under base');
+    assertTrue(UrlPath::isUnderBasePath('/sprintask/settings', '/sprintask'), 'Child path is under base');
+    assertTrue(!UrlPath::isUnderBasePath('/other-app/page', '/sprintask'), 'Sibling app is not under base');
+    assertTrue(!UrlPath::isUnderBasePath('/sprintask2/page', '/sprintask'), 'Prefix-only match is not under base');
+}
+
 testCsrfTokenSurvivesSessionLoss();
+testIsUnderBasePath();
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testResumeTask();

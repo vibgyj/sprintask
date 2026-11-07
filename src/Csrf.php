@@ -14,30 +14,25 @@ namespace App;
  * page is still accepted because it is restored from the cookie instead of
  * being replaced by a brand-new one.
  *
- * A cross-site attacker can neither read the HttpOnly cookie nor the token in
- * the page, so they still cannot produce a matching form value.
+ * The cookie is only consulted when the session holds no token, so an intact
+ * session is always checked against its own token. The token is rotated on
+ * interactive login and cleared on logout so it never carries over between
+ * users of the same browser.
  */
 final class Csrf
 {
-    private const COOKIE_TTL_SECONDS = 30 * 24 * 3600;
-
     public function __construct(
         private readonly string $sessionKey,
         private readonly string $cookieName = 'sprintask_csrf',
+        private readonly int $cookieTtlSeconds = 30 * 24 * 3600,
         private readonly ?bool $secure = null
     ) {
     }
 
     public function token(): string
     {
-        $token = $this->storedToken();
-        if ($token === null) {
-            $token = bin2hex(random_bytes(32));
-        }
-
-        $_SESSION[$this->sessionKey] = $token;
-        $this->persistCookie($token);
-
+        $token = $this->storedToken() ?? self::generate();
+        $this->store($token);
         return $token;
     }
 
@@ -47,55 +42,65 @@ final class Csrf
             return false;
         }
 
-        foreach ($this->candidates() as $stored) {
-            if (hash_equals($stored, $token)) {
-                // Re-sync the session if it was lost and restored from the cookie.
-                $_SESSION[$this->sessionKey] = $stored;
-                return true;
-            }
+        $stored = $this->storedToken();
+        if ($stored === null || !hash_equals($stored, $token)) {
+            return false;
         }
 
-        return false;
+        // Re-sync the session if it was lost and restored from the cookie.
+        $_SESSION[$this->sessionKey] = $stored;
+        return true;
     }
 
-    /** @return list<string> */
-    private function candidates(): array
+    /** Issue a brand-new token (call after an interactive login). */
+    public function rotate(): string
     {
-        $out = [];
-        $session = $_SESSION[$this->sessionKey] ?? null;
-        if (self::isWellFormed($session)) {
-            $out[] = $session;
-        }
-        $cookie = $_COOKIE[$this->cookieKey()] ?? null;
-        if (self::isWellFormed($cookie) && !in_array($cookie, $out, true)) {
-            $out[] = $cookie;
-        }
-        return $out;
+        $token = self::generate();
+        $this->store($token);
+        return $token;
+    }
+
+    /** Forget the token in both the session and the cookie (call on logout). */
+    public function clear(): void
+    {
+        unset($_SESSION[$this->sessionKey]);
+        $this->writeCookie('', time() - 3600);
+        unset($_COOKIE[$this->cookieKey()]);
     }
 
     private function storedToken(): ?string
     {
-        return $this->candidates()[0] ?? null;
+        $session = $_SESSION[$this->sessionKey] ?? null;
+        if (self::isWellFormed($session)) {
+            return $session;
+        }
+        $cookie = $_COOKIE[$this->cookieKey()] ?? null;
+        return self::isWellFormed($cookie) ? $cookie : null;
     }
 
-    private function persistCookie(string $token): void
+    private function store(string $token): void
     {
-        $name = $this->cookieKey();
+        $_SESSION[$this->sessionKey] = $token;
+        // Only send Set-Cookie when the browser doesn't already hold this value.
+        if (($_COOKIE[$this->cookieKey()] ?? null) !== $token) {
+            $this->writeCookie($token, time() + $this->cookieTtlSeconds);
+            $_COOKIE[$this->cookieKey()] = $token;
+        }
+    }
+
+    private function writeCookie(string $value, int $expires): void
+    {
         if (headers_sent() || PHP_SAPI === 'cli') {
-            $_COOKIE[$name] = $token;
             return;
         }
-
-        // Refresh the cookie on every render so its lifetime slides with activity.
-        setcookie($name, $token, [
-            'expires' => time() + self::COOKIE_TTL_SECONDS,
+        setcookie($this->cookieKey(), $value, [
+            'expires' => $expires,
             'path' => '/',
             'domain' => '',
             'secure' => $this->isSecure(),
             'httponly' => true,
             'samesite' => 'Lax',
         ]);
-        $_COOKIE[$name] = $token;
     }
 
     private function cookieKey(): string
@@ -106,10 +111,12 @@ final class Csrf
 
     private function isSecure(): bool
     {
-        if ($this->secure !== null) {
-            return $this->secure;
-        }
-        return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
+        return $this->secure ?? Util::isHttps($_SERVER);
+    }
+
+    private static function generate(): string
+    {
+        return bin2hex(random_bytes(32));
     }
 
     private static function isWellFormed(mixed $value): bool
