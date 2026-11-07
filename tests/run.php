@@ -625,6 +625,39 @@ function testResumeTask(): void {
     unlink($path);
 }
 
+function testCsrfTokenSurvivesSessionLoss(): void {
+    $_SESSION = [];
+    $_COOKIE = [];
+    $csrf = new App\Csrf('_csrf_token', 'sprintask_csrf', false);
+
+    $token = $csrf->token();
+    assertTrue(strlen($token) === 64, 'CSRF token should be 64 hex chars');
+    assertTrue($csrf->validate($token), 'Fresh token should validate');
+    assertTrue(!$csrf->validate('x'), 'Garbage token must fail');
+    assertTrue(!$csrf->validate(null), 'Missing token must fail');
+    assertTrue(!$csrf->validate(str_repeat('a', 64)), 'Unknown well-formed token must fail');
+
+    // Simulate the server-side session being garbage-collected while the page
+    // (and its embedded token) stays open in the browser for hours.
+    $_SESSION = [];
+    assertTrue($csrf->validate($token), 'Token from an open page must still validate after session loss');
+    assertTrue(($_SESSION['_csrf_token'] ?? null) === $token, 'Session token should be re-synced from cookie');
+    assertTrue($csrf->token() === $token, 'Re-rendering after session loss must reuse the same token');
+
+    // Without the cookie (e.g. cross-site request without credentials) and session, nothing validates.
+    $_SESSION = [];
+    $_COOKIE = [];
+    assertTrue(!$csrf->validate($token), 'Token must fail when neither session nor cookie hold it');
+
+    // Tampered cookie values are ignored.
+    $_COOKIE['sprintask_csrf'] = '<script>';
+    assertTrue(!$csrf->validate('<script>'), 'Malformed cookie token must be ignored');
+
+    $_SESSION = [];
+    $_COOKIE = [];
+}
+
+testCsrfTokenSurvivesSessionLoss();
 testOtpAndMail();
 testOtpExpiryAndMaxAttempts();
 testResumeTask();

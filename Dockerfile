@@ -11,7 +11,7 @@ COPY . /var/www/html
 COPY docker/entrypoint.sh /usr/local/bin/sprintask-entrypoint
 
 RUN a2enmod rewrite \
-    && mkdir -p /var/www/html/var/data /var/www/html/var/log \
+    && mkdir -p /var/www/html/var/data /var/www/html/var/log /var/www/html/var/sessions \
     && chown -R www-data:www-data /var/www/html/var \
     && chmod +x /usr/local/bin/sprintask-entrypoint
 

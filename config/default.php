@@ -29,5 +29,8 @@ return [
     'session' => [
         'name' => 'sprintask_session',
         'remember_cookie' => 'sprintask_remember',
+        'csrf_cookie' => 'sprintask_csrf',
+        'save_path' => __DIR__ . '/../var/sessions',
+        'idle_lifetime_seconds' => 7 * 24 * 3600,
     ],
 ];
